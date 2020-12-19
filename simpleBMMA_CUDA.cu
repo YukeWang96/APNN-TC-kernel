@@ -48,29 +48,21 @@ __global__ void BMM_SHMEM(unsigned *A, unsigned *B, int *C, int A_height, int A_
   __shared__ uint4 As[32], Bs[32]; // buffering (8*128)*8 bit block in shared memory
   const int laneid=threadIdx.x; const int wx = threadIdx.y; const int wy=threadIdx.z; // tile index
   const int bx = blockIdx.x; const int by=blockIdx.y; // block index
-  printf("ckpt1\n");
   wmma::fragment<wmma::matrix_a,8,8,128, precision::b1, wmma::row_major> a_frag; // tile A
   wmma::fragment<wmma::matrix_b,8,8,128, precision::b1, wmma::col_major> b_frag; // tile B
   wmma::fragment<wmma::accumulator,8,8,128, int> c_frag; wmma::fill_fragment(c_frag,0); // tile C
-  printf("ckpt2\n");
-  for (int k=0; k<A_width; k++) {
-    printf("ckpt3\n");
+  for (int k=0; k<A_width; k=k+128) { // Bug in Listing 4. Change from "k++" => "k+=128"
     if(wx==0 && wy==0) {
       // one warp fetches data into shared memory for 16 warps of a thread block
-      printf("enter wx0 wy0\n");
-      As[laneid] = ((uint4*)A)[(bx*32+laneid)*A_width+k];
-      printf("mid wx0 wy0\n");
-      Bs[laneid] = ((uint4*)B)[(by*32+laneid)*A_width+k];
-      printf("exit wx0 wy0\n");
+      As[laneid] = ((uint4*)A)[((bx*32+laneid)*A_width+k)/128]; // Bug in Listing 4. Additionally "/128".
+      Bs[laneid] = ((uint4*)B)[((by*32+laneid)*A_width+k)/128]; // Bug in Listing 4. Additionally "/128".
     }
     __syncthreads(); // for respecting RAW dependency
-    printf("ckpt4\n");
     load_matrix_sync(a_frag, &As[wx*8], 128);
     load_matrix_sync(b_frag, &Bs[wy*8], 128);
     bmma_sync(c_frag, a_frag, b_frag, c_frag);
     __syncthreads(); // for respecting WAR dependency
   }
-  printf("ckpt5\n");
   for (int i=0; i<c_frag.num_elements;i++) c_frag.x[i] = (A_width*128)-(2*c_frag.x[i]); // +1/-1 BMM
   store_matrix_sync(&C[(bx*4+wx)*8*B_width + (by*4+wy)*8], c_frag, B_width, wmma::mem_row_major);
 }
@@ -83,6 +75,8 @@ void BMM_Wrapper(int M, int N, int K) {
   int sizeA = M*K/32;
   int sizeB = N*K/32;
   int sizeC = M*N;
+
+  int NUM_PROFILE = 200;
 
   /* Allocate device memory for the matrices */
   if (cudaMalloc(reinterpret_cast<void **>(&d_A), sizeA * sizeof(d_A[0])) !=
@@ -107,7 +101,7 @@ void BMM_Wrapper(int M, int N, int K) {
   cudaEventCreate(&stop);
   cudaEventRecord(start);
 
-  for(int trial = 0; trial < 200; trial ++) {
+  for(int trial = 0; trial < NUM_PROFILE; trial ++) {
     BMM<<<dim3(M/16, N/8), dim3(32,2)>>>(d_A, d_B, d_C, M, K, N);
   }
 
@@ -118,36 +112,33 @@ void BMM_Wrapper(int M, int N, int K) {
 
   cudaEventElapsedTime(&milliseconds_BMM, start, stop);
 
-  printf("BMM Performance. M: %d, N: %d, K: %d, TOPS: %.2f\n", M, N, K, static_cast<double>(200*(static_cast<double>(M) *
+  printf("BMM Performance. M: %d, N: %d, K: %d, TOPS: %.2f\n", M, N, K, static_cast<double>(NUM_PROFILE*(static_cast<double>(M) *
                                                 N * K * 2) /
                                                (milliseconds_BMM / 1000.)) /
                                1e12);
 
-  cudaEvent_t start_BMM_SHMEM, stop_BMM_SHMEM;
-  cudaEventRecord(start_BMM_SHMEM);
-
   // END: End Performance measurement for BMM
 
   // START: Performance measurement for BMM_SHMEM
+  cudaEvent_t start_BMM_SHMEM, stop_BMM_SHMEM;
+  cudaEventCreate(&start_BMM_SHMEM);
+  cudaEventCreate(&stop_BMM_SHMEM);
   cudaEventRecord(start_BMM_SHMEM);
-  for(int trial = 0; trial < 200; trial ++) {
+
+  for(int trial = 0; trial < NUM_PROFILE; trial ++) {
     BMM_SHMEM<<<dim3(M/32, N/32), dim3(32,4,4)>>>(d_A, d_B, d_C, M, K, N);
   }
 
-  
   cudaEventRecord(stop_BMM_SHMEM);
   cudaEventSynchronize(stop_BMM_SHMEM);
 
-
   float milliseconds_BMM_SHMEM = 0;
   cudaEventElapsedTime(&milliseconds_BMM_SHMEM, start_BMM_SHMEM, stop_BMM_SHMEM);
-  printf("milliseconds_BMM_SHMEM %.2f\n", milliseconds_BMM_SHMEM);
-  printf("BMM_SHMEM. M: %d, N: %d, K: %d, TOPS: %.2f\n", M, N, K, static_cast<double>(200*(static_cast<double>(M) *
+  printf("BMM_SHMEM. M: %d, N: %d, K: %d, TOPS: %.2f\n", M, N, K, static_cast<double>(NUM_PROFILE*(static_cast<double>(M) *
                                                 N * K * 2) /
                                                (milliseconds_BMM_SHMEM / 1000.)) /
                                1e12);
   // END: Performance measurement for BMM_SHMEM
-  
 
   if (cudaFree(d_A) != cudaSuccess) {
     fprintf(stderr, "!!!! memory free error (A)\n");
@@ -163,6 +154,6 @@ void BMM_Wrapper(int M, int N, int K) {
 }
 
 int main(){
-  BMM_Wrapper(4096, 4096, 4096);
+  BMM_Wrapper(8192, 8192, 8192);
   return 0;
 }
