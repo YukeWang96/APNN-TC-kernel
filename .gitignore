@@ -4,3 +4,6 @@
 *.ptx
 *.cubin
 *.fatbin
+simpleBMMA_CUDA
+cubin
+debugInfo
