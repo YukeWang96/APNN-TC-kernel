@@ -1,0 +1,49 @@
+<params>
+param_A, 8
+param_B, 8
+param_C, 8
+</params>
+
+<regs>
+0-3 : c0, c1, a, b
+5 : int
+6-7 : A, B
+8 : laneid
+9 : byte4
+10-15: trackA<0-1>, trackB<0-1>, trackC<0-1>
+</regs>
+
+--:-:1:-:2     S2R laneid, SR_TID.X;
+--:-:-:-:2     MOV byte4, 4;
+
+###################
+# Compute offset of global load and load the data
+# trackA = laneid*4, track = laneid*4
+--:-:-:-:8     IMAD.WIDE trackA0, laneid, byte4, param_A[0];
+--:-:-:-:8     IMAD.WIDE trackB0, laneid, byte4, param_B[0];
+
+# Compute offset of global store and store the data
+# --:-:-:-:8     IMAD.WIDE trackC0, laneid, byte4, param_C[0]; # Some bug at this line
+
+# Load the data from GL to Registers
+--:-:1:-:2     LDG.E A, [trackA0];
+--:-:1:-:2     LDG.E B, [trackB0];
+# --:3:1:-:8      LDG.E.128.CONSTANT.GPU A, [trackA0];
+# --:3:1:-:8      LDG.E.128.CONSTANT.GPU B, [trackA0];
+
+# Initialize c0 as 0
+--:-:-:-:1    CS2R c0, SRZ;
+
+# Computation with bmma
+--:-:-:-:4     BMMA.88128.POPC c0, A.ROW, B.COL, c0;
+--:-:-:-:8     BAR.SYNC 0x0;
+
+
+
+
+# Store to Global memory
+02:-:-:-:2     STG.E [trackA0], c0;
+
+# 02:3:-:-:8     STG.E.128.SYS [trackC0], Oyx0;
+
+--:-:-:-:2     EXIT;
