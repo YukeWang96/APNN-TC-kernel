@@ -1,0 +1,5 @@
+01_simplestBMMA.sass
+
+现在有一个sass code, 有基本的load data, 以及bmma instruction. 可以跑，cuda-gdb不报错。但是没有STG, 地址是瞎写的，也没有验证计算结果的正确性。
+
+
