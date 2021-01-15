@@ -36,13 +36,13 @@ void run(char * name){
 	cudaMemcpy(output_h, output, sizeof(int)*32, cudaMemcpyDeviceToHost);
 
 	printf("%s took %d clocks.\n", name, output_h[0]);
-	printf("Each instruction takes %.2f clocks.\n\n", (float)output_h[0]/(1.0*128.0));
+	printf("Each instruction takes %.2f clocks.\n\n", (float)output_h[0]/(30.0f));
 
 	cudaFree(output);
 	free(output_h);
 }
 
 int main(){
-	run("LDG_profile1");
+	run("LDG_profile");
 	return 0;
 }
