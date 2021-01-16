@@ -176,8 +176,8 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma::experimental;
 
-__global__ void compute_gemm_imma(const unsigned *A, const unsigned *B,
-                                  unsigned *C, const unsigned A_height, consut unsigned B_height, const unsigned A_width) {
+__global__ void compute_gemm_imma(const uint8_t *A, const uint8_t *B,
+    const int *C, int *D, int alpha, int beta) {
   extern __shared__ uint8_t shmem[][CHUNK_K * K + SKEW_UINT8];
 
   // Warp and lane identification.
@@ -190,17 +190,11 @@ __global__ void compute_gemm_imma(const unsigned *A, const unsigned *B,
   // This pointer is used to access the C and D matrix tiles this warp computes.
   int *shmem_warp_tile_ptr = (int *)&shmem[0][0] +
                              (warpId / 2) * SHMEM_STRIDE * K * 2 +
-                             (warpId % 2) * SHMEM_OFFSET;
+                             (warpId % 2) * SHMEM_OFFSET; // Will be used only when writing back D. TODO.
 
   // This pointer is used to stream the C and D matrices block-wide tile to and
   // from shared memory.
-  int *shmem_warp_stream_ptr = (int *)&shmem[0][0] + warpId * SHMEM_STRIDE * K;
-
-  // Adjust the beta scaler, as it'll be multiplied by alpha at the end of
-  // each tile computation. Technically this is not generally correct (may
-  // result in a loss of precision). Zero still needs to be specially handled
-  // though.
-  beta /= alpha;
+  int *shmem_warp_stream_ptr = (int *)&shmem[0][0] + warpId * SHMEM_STRIDE * K; // Will be used only when writing back D. TODO.
 
   // Each CTA slides along the 128 x 128 tiles from the top left corner of the
   // matrix to the right and down, and selects the next tile to compute. Once
@@ -219,50 +213,12 @@ __global__ void compute_gemm_imma(const unsigned *A, const unsigned *B,
     // memory.
     const size_t gmem_idx =
         (block_tile_i + warpId) * M * GLOBAL_MEM_STRIDE + block_tile_j * N;
-    const int *src_gmem_warp_stream_ptr = &C[gmem_idx];
 
-    // Stream multiple C tiles to shared memory.
-#pragma unroll
-    for (int i = 0; i < K; i++) {
-      typedef int4 copy_t;
-
-      *((copy_t *)(shmem_warp_stream_ptr + SHMEM_STRIDE * i) + laneId) =
-          *((copy_t *)(src_gmem_warp_stream_ptr + GLOBAL_MEM_STRIDE * i) +
-            laneId);
-    }
-
-    __syncthreads();
 
     // These fragments will accumulate the result of A and B matrix fragment
     // multiplications along the K_GLOBAL dimension.
     wmma::fragment<wmma::accumulator, M, N, K, int> c[WARP_COL_TILES]
                                                      [WARP_ROW_TILES];
-
-    // Load the C matrix tiles into fragments from shared memory.
-#pragma unroll
-    for (int i = 0; i < WARP_COL_TILES; i++) {
-#pragma unroll
-      for (int j = 0; j < WARP_ROW_TILES; j++) {
-        const int *tile_ptr =
-            shmem_warp_tile_ptr + i * SHMEM_STRIDE * K + j * N;
-
-        wmma::load_matrix_sync(c[i][j], tile_ptr, SHMEM_STRIDE, C_LAYOUT);
-      }
-    }
-
-    __syncthreads();
-
-    // Scale the C matrix.
-#pragma unroll
-    for (int i = 0; i < WARP_COL_TILES; i++) {
-#pragma unroll
-      for (int j = 0; j < WARP_ROW_TILES; j++) {
-#pragma unroll
-        for (int t = 0; t < c[i][j].num_elements; t++) {
-          c[i][j].x[t] *= beta;
-        }
-      }
-    }
 
     // Select what warp copies what matrix to shared memory.
     // Warps 0-3 copy the A matrix, warps 4-7 copy the B matrix.
@@ -421,8 +377,6 @@ int main(int argc, char **argv) {
   assert(((unsigned long long)C) % 128 == 0);
   assert(((unsigned long long)D) % 128 == 0);
 
-  init_host_matrices(A_h, B_h, C_h);
-
   checkCudaErrors(cudaMemcpy(A, A_h, sizeof(uint8_t) * M_GLOBAL * K_GLOBAL,
                              cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMemcpy(B, B_h, sizeof(uint8_t) * N_GLOBAL * K_GLOBAL,
@@ -463,32 +417,15 @@ int main(int argc, char **argv) {
   checkCudaErrors(cudaEventRecord(start));
 
   // If enough shared memory available on the GPU use high performant kernel
-  if (0) {
-    printf("Computing... using high performance kernel compute_gemm_imma \n");
+  printf("Computing... using high performance kernel compute_gemm_imma \n");
 
-    checkCudaErrors(cudaFuncSetAttribute(
-        compute_gemm_imma, cudaFuncAttributeMaxDynamicSharedMemorySize,
-        SHMEM_SZ));
-    checkKernelErrors(
-        (compute_gemm_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
-                             SHMEM_SZ>>>(A, B, C, D, alpha, beta)));
-  } else {
-    dim3 gridDim;
-    dim3 blockDim;
+  checkCudaErrors(cudaFuncSetAttribute(
+      compute_gemm_imma, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      SHMEM_SZ));
+  checkKernelErrors(
+      (compute_gemm_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+                            SHMEM_SZ>>>(A, B, C, D, alpha, beta)));
 
-    // blockDim.x must be a multiple of warpSize
-    // 128x4 means we have 16 warps and a block computes a 64x64 output tile
-    blockDim.x = 128;
-    blockDim.y = 4;
-
-    gridDim.x = (M_GLOBAL + (WMMA_M * blockDim.x / 32 - 1)) /
-                (WMMA_M * blockDim.x / 32);
-    gridDim.y = (N_GLOBAL + WMMA_N * blockDim.y - 1) / (WMMA_N * blockDim.y);
-
-    printf("Computing... using simple_wmma_gemm_imma kernel\n");
-    simple_wmma_gemm_imma<<<gridDim, blockDim>>>(A, B, C, D, M_GLOBAL, N_GLOBAL,
-                                                 K_GLOBAL, alpha, beta);
-  }
 
   checkCudaErrors(cudaEventRecord(stop));
   checkCudaErrors(cudaEventSynchronize(stop));
