@@ -1,3 +1,7 @@
 0:
 Basic imma code from CUDA SDK without modification.
 
+1:
+Clean up imma code. Will implement bmma from here.
+
+
