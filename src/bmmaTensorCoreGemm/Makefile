@@ -267,13 +267,13 @@ SAMPLE_ENABLED := 1
 
 # This sample is not supported on Mac OSX
 ifeq ($(TARGET_OS),darwin)
-  $(info >>> WARNING - immaTensorCoreGemm is not supported on Mac OSX - waiving sample <<<)
+  $(info >>> WARNING - bmmaTensorCoreGemm is not supported on Mac OSX - waiving sample <<<)
   SAMPLE_ENABLED := 0
 endif
 
 # This sample is not supported on ARMv7
 ifeq ($(TARGET_ARCH),armv7l)
-  $(info >>> WARNING - immaTensorCoreGemm is not supported on ARMv7 - waiving sample <<<)
+  $(info >>> WARNING - bmmaTensorCoreGemm is not supported on ARMv7 - waiving sample <<<)
   SAMPLE_ENABLED := 0
 endif
 
@@ -322,7 +322,7 @@ endif
 # Target rules
 all: build
 
-build: immaTensorCoreGemm
+build: bmmaTensorCoreGemm
 
 check.deps:
 ifeq ($(SAMPLE_ENABLED),0)
@@ -331,19 +331,19 @@ else
 	@echo "Sample is ready - all dependencies have been met"
 endif
 
-immaTensorCoreGemm.o:immaTensorCoreGemm.cu
+bmmaTensorCoreGemm.o:bmmaTensorCoreGemm.cu
 	$(EXEC) $(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
 
-immaTensorCoreGemm: immaTensorCoreGemm.o
+bmmaTensorCoreGemm: bmmaTensorCoreGemm.o
 	$(EXEC) $(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $+ $(LIBRARIES)
 	$(EXEC) mkdir -p ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
 	$(EXEC) cp $@ ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)
 
 run: build
-	$(EXEC) ./immaTensorCoreGemm
+	$(EXEC) ./bmmaTensorCoreGemm
 
 clean:
-	rm -f immaTensorCoreGemm immaTensorCoreGemm.o
-	rm -rf ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)/immaTensorCoreGemm
+	rm -f bmmaTensorCoreGemm bmmaTensorCoreGemm.o
+	rm -rf ../../bin/$(TARGET_ARCH)/$(TARGET_OS)/$(BUILD_TYPE)/bmmaTensorCoreGemm
 
 clobber: clean
