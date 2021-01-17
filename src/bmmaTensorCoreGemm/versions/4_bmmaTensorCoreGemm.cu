@@ -276,7 +276,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       // if (warpId == 0 && laneId == 0) {
       //   printf("ckpt2\n");
       // }
-      /*
+  
       // Compute a grid of C matrix tiles in each warp.
 #pragma unroll
       for (int k_step = 0; k_step < CHUNK_K; k_step++) {
@@ -311,11 +311,10 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
         }
       }
       __syncthreads();
-      */
     }
     
     // 接下来还需要认真修改一下。现在write-to-GL多花了一倍的memory access.
-    /*
+
     // This pointer is used to access the C and D matrix tiles this warp computes.
     int4 *shmem_warp_tile_ptr = &shmem[0][0] +
                               (warpId / 2) * SHMEM_STRIDE * (K/128) * 2 +
@@ -357,7 +356,6 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     }
 
     __syncthreads();
-    */
   }
 }
 

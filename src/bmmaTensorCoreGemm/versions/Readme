@@ -11,3 +11,19 @@ CUDA error at bmmaTensorCoreGemm.cu:418 code=700(cudaErrorIllegalAddress) "cudaE
 3:
 SHMEM and BMMA seems to be correct. Writing back to D is still being developed.
 
+4:
+Add writing back to D. Have all workloads (e.g., read, compute, write). Can compile and run. Speed is 400TOPS.
+2x faster than Li Ang's BMMASN-Bin (~200TOPS, on a matrix of MxNxK: 8192x8192x65536). 4x faster than Li Ang's BMMA_bin implementation (~120TOPS).
+
+Overall, the kernel takes 21 ms (404TOPS).
+Loading from GL takes 9 ms.
+BMMA takes 1.2 ms.
+Writing back to SHMEM takes 6 ms.
+Writing back to GL takes 5 ms.
+
+Note:
+    a. The address of writing back to D has not been carefully checked.
+    b. The correctness of the result is not validated.
+    c. The performance may still be improved. E.g., i) Increase the block size; (ii) reduce the GL write according to the required number of bits in the workload.
+
+
