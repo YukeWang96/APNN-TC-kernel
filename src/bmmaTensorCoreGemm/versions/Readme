@@ -16,14 +16,21 @@ Add writing back to D. Have all workloads (e.g., read, compute, write). Can comp
 2x faster than Li Ang's BMMASN-Bin (~200TOPS, on a matrix of MxNxK: 8192x8192x65536). 4x faster than Li Ang's BMMA_bin implementation (~120TOPS).
 
 Overall, the kernel takes 21 ms (404TOPS).
-Loading from GL takes 9 ms.
-BMMA takes 1.2 ms.
-Writing back to SHMEM takes 6 ms.
-Writing back to GL takes 5 ms.
+Loading from GL takes 9 ms. 
+BMMA takes 1.2 ms. [去除这块，有918TOPS]
+Writing back to SHMEM takes 6 ms. [去除这块，有787TOPS]
+Writing back to GL takes 5 ms. [去除这块，有528TOPS]
 
 Note:
     a. The address of writing back to D has not been carefully checked.
     b. The correctness of the result is not validated.
     c. The performance may still be improved. E.g., i) Increase the block size; (ii) reduce the GL write according to the required number of bits in the workload.
+
+5:
+This version should be logically correct. It can also compile and run without any errors or warnings.
+This version is 520 TOPS, since some memory access errors are corrected.
+
+The correctness of the result is not validated yet.
+
 
 
