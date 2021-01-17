@@ -8,5 +8,6 @@ Clean up imma code. Will implement bmma from here.
 An initial attempt. Still some bugs.
 CUDA error at bmmaTensorCoreGemm.cu:418 code=700(cudaErrorIllegalAddress) "cudaEventSynchronize(stop)"
 
-
+3:
+SHMEM and BMMA seems to be correct. Writing back to D is still being developed.
 
