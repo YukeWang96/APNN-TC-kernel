@@ -6,3 +6,7 @@ Clean up imma code. Will implement bmma from here.
 
 2:
 An initial attempt. Still some bugs.
+CUDA error at bmmaTensorCoreGemm.cu:418 code=700(cudaErrorIllegalAddress) "cudaEventSynchronize(stop)"
+
+
+
