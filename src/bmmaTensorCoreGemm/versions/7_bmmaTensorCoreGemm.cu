@@ -94,9 +94,9 @@
 
 // GEMM configuration.
 
-#define M_TILES 1024
-#define N_TILES 1024
-#define K_TILES 512
+#define M_TILES 16
+#define N_TILES 16
+#define K_TILES 8
 
 #define M_GLOBAL (M * M_TILES)
 #define N_GLOBAL (N * N_TILES)
@@ -179,24 +179,23 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
   const unsigned int warpId = threadIdx.x / WARP_SIZE;
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
+  // These fragments will accumulate the result of A and B matrix fragment
+  // multiplications along the K_GLOBAL dimension.
+  wmma::fragment<wmma::accumulator, M, N, K, int> c[WARP_COL_TILES]
+                                                    [WARP_ROW_TILES];
+
   // Each CTA slides along the 128 x 128 tiles from the top left corner of the
   // matrix to the right and down, and selects the next tile to compute. Once
   // there's no such tile, all warps in this CTA exit.
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_TILES/8) * 8;
-        // (block_pos * BLOCK_ROW_TILES * BLOCK_COL_TILES) / N_TILES;
-    const unsigned int block_tile_j = block_pos % (N_TILES/8) * 8;
-    // (block_pos * BLOCK_COL_TILES) % N_TILES;
+    const unsigned int block_tile_i =
+        (block_pos * BLOCK_ROW_TILES * BLOCK_COL_TILES) / N_TILES;
+    const unsigned int block_tile_j = (block_pos * BLOCK_COL_TILES) % N_TILES;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
     if (block_tile_i >= M_TILES) {
       break;
     }
-
-    // These fragments will accumulate the result of A and B matrix fragment
-    // multiplications along the K_GLOBAL dimension.
-    wmma::fragment<wmma::accumulator, M, N, K, int> c[WARP_COL_TILES]
-                                                     [WARP_ROW_TILES];
 
     for(int i=0; i < WARP_COL_TILES; i++)
       for(int j = 0; j < WARP_ROW_TILES; j++)
@@ -273,6 +272,15 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
       __syncthreads();
 
+      // if (warpId==0 and laneId == 0) {
+        // for(int check_i = 0; check_i < 32; check_i++) {
+        //   printf("warpId: %d, laneId: %d, shmem[35][%d]: %x, shmem[shmem_idx_b_off+35][%d]: %x\n", warpId, laneId, check_i, *((int*)&shmem[0][0]+check_i), check_i, *((int*)&shmem[shmem_idx_b_off][0]+check_i));
+
+  
+        // }  
+      // }
+
+
 
       // if (warpId == 0 && laneId == 0) {
       //   printf("ckpt2\n");
@@ -288,10 +296,21 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
         for (int i = 0; i < WARP_COL_TILES; i++) {
           size_t shmem_idx_a = (warpId / 2) * M * 2 + (i * M);
           const int4 *tile_ptr = &shmem[shmem_idx_a][k_step * (K/128)];
+          // const uint8_t *tile_ptr = (uint8_t*)&shmem[shmem_idx_a][k_step * (K/128)];
 
-          wmma::load_matrix_sync(a[i], tile_ptr, CHUNK_K + SKEW);
+          wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
 
-          // printf("ckpt3\n");
+          // if (warpId==0 and laneId == 0) {
+          // for (int t = 0; t < a[i].num_elements; t++) {
+          //   // printf("warpId: %d, laneId: %d, shmem_idx_a: %d, a[%d].x[%d]: %x\n",  warpId, laneId, shmem_idx_a, i, t, a[i].x[t]);
+          //   printf("a[i].num_elements: %d\n", a[i].num_elements);
+          //   printf("warpId: %d, laneId: %d, a[%d].x[%d]: %x\n",  warpId, laneId, i, t, a[i].x[t]);
+          // }
+          // }
+          int tmp = (int) CHUNK_K;
+          printf("address. shmem_idx_a: %d, k_step: %d, CHUNK_K: %d\n", shmem_idx_a, k_step, tmp);
+          // printf("warpId: %d, a[%d].x[0]: %x, *(&shmem[shmem_idx_a][k_step * (K/128)]): %x, shmem_idx_a: %zu, k_step: %d\n",  warpId, i, a[i].x[0], *(&shmem[shmem_idx_a][k_step * (K/128)]), shmem_idx_a, k_step);
+          // printf("a[i].x[0]: %x, shmem[shmem_idx_a][k_step * (K/128)]: %x, shmem_idx_a: %zu, k_step: %zu\n", a[i].x[0], shmem[shmem_idx_a][k_step * (K/128)], shmem_idx_a, k_step);
 
 #pragma unroll
           for (int j = 0; j < WARP_ROW_TILES; j++) {
@@ -303,7 +322,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
                                    (j * N);
               const int4 *tile_ptr = &shmem[shmem_idx_b][k_step * (K/128)];
 
-              wmma::load_matrix_sync(b[j], tile_ptr, CHUNK_K + SKEW);
+              wmma::load_matrix_sync(b[j], tile_ptr, (CHUNK_K + SKEW)*128);
             }
             // printf("ckpt4\n");
 
@@ -314,6 +333,18 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       __syncthreads();
     }
     
+
+    // // if (warpId==0 and laneId == 0) {
+    //   for (int i = 0; i < WARP_COL_TILES; i++) {
+    //     for (int j = 0; j < WARP_ROW_TILES; j++) {
+    //       for (int t = 0; t < c[i][j].num_elements; t++) {
+    //         printf("warpId: %d, laneId: %d, c[i][j].num_elements: %d, c[%d][%d].x[%d]: %d\n",  warpId, laneId, c[i][j].num_elements, i, j, t, c[i][j].x[t]);
+    //       }
+    //     }
+    //   }
+    // // }
+
+
     // This pointer is used to access the C and D matrix tiles this warp computes.
     int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
                               (warpId / 2) * SHMEM_STRIDE * M * 2 +
@@ -336,9 +367,8 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    const size_t gmem_idx = (block_tile_i + warpId) * M * GLOBAL_MEM_STRIDE + block_tile_j * N;
-
-    // printf("block_tile_i: %d, warpId: %d, block_tile_j: %d, gmem_idx: %lu\n", block_tile_i, warpId, block_tile_j, (unsigned long)gmem_idx);
+    const size_t gmem_idx =
+        (block_tile_i + warpId) * M * GLOBAL_MEM_STRIDE + block_tile_j * N;
 
     // Now that shared memory contains all the D tiles, stream them to global memory.
     int *dst_gmem_warp_stream_ptr = (int *)&D[gmem_idx];
@@ -359,13 +389,13 @@ void init_matrices(int4 *A, int4 *B){
   int *B_int = (int*) B;
   for(int i = 0; i < M_GLOBAL; i++) {
     for(int j = 0; j < K_GLOBAL/32; j++) {
-      A_int[i*K_GLOBAL/32+j] = rand();
+      A_int[i*K_GLOBAL/32+j] = 0x0000000F;
     }
   }
 
   for(int i = 0; i < N_GLOBAL; i++) {
     for(int j = 0; j < K_GLOBAL/32; j++) {
-      B_int[i*K_GLOBAL/32+j] = rand();
+      B_int[i*K_GLOBAL/32+j] = 0xFFFFFFFF;
     }
   }
 }
@@ -375,15 +405,18 @@ void validate_results(int *C, int* ref_C, int M_, int N_) {
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for (int i = 0; i < M_ * N_; i++) {
-    double dst = fabs(C[i] - ref_C[i]);
-    double abs = fabs(C[i]) * fabs(ref_C[i]);
-    double ref_err = dst / abs;
-    if (ref_err > eps) {
-      // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
-      printf("C: %d, ref_C: %d\n", C[i], ref_C[i]);
-      // printf("non equal\n");
-      correct = false;
+  for (int i = 0; i < M_; i ++) {
+    for (int j = 0; j < N_; j++) {
+      int idx = i*N_+j;
+      double dst = fabs(C[idx] - ref_C[idx]);
+      double abs = fabs(C[idx]) * fabs(ref_C[idx]);
+      double ref_err = dst / abs;
+      if (ref_err > eps) {
+        // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
+        printf("i: %d, j: %d, C: %d, ref_C: %d\n", i, j, C[idx], ref_C[idx]);
+        // printf("non equal\n");
+        correct = false;
+      }
     }
   }
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
@@ -414,7 +447,7 @@ void compute_ref(int4 *A, int4 *B, int *ref_C) {
   }
 }
 
-// #define verify_output
+#define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");
@@ -509,7 +542,7 @@ int main(int argc, char **argv) {
   compute_ref(A_h, B_h, C_ref);
 
   /* validation results */
-  validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL);
+  // validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL);
 #endif
 
   free(A_h);

@@ -38,4 +38,14 @@ Add validation code.
 
 The computation results is not correct.
 
+A初始化成0x0000000F, B初始化成0xFFFFFFFF时，偶数行对，奇数行出错。
+
+7:
+Backup. 2021-1-17. 9:59 PM.
+
+8:
+Fix a bug in block_i and block_j.
+
+
+
 

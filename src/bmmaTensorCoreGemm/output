@@ -1,0 +1,12 @@
+Initializing...
+MapSMtoCores for SM 8.6 is undefined.  Default to use 64 Cores/SM
+MapSMtoArchName for SM 8.6 is undefined.  Default to use Turing
+GPU Device 0: "Turing" with compute capability 8.6
+
+M: 8192 (8 x 1024)
+N: 8192 (8 x 1024)
+K: 65536 (128 x 512)
+Required shared memory size: 20 Kb
+Computing... using high performance kernel compute_gemm_imma 
+Time: 16.902784 ms
+TOPS: 520.39
