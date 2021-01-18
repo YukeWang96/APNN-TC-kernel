@@ -33,4 +33,9 @@ This version is 520 TOPS, since some memory access errors are corrected.
 The correctness of the result is not validated yet.
 
 
+6:
+Add validation code.
+
+The computation results is not correct.
+
 
