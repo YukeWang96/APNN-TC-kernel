@@ -67,4 +67,11 @@ Cleanup.
 
 12:
 Repeat 200 times to measure the performance.
+This is the complete version for bmma with 64x64 tiling block.
+We name this version as BMMA_64
+
+13:
+BMMA_64 with reduce.
+We name this version as BMMA_64_Reduce.
+
 
