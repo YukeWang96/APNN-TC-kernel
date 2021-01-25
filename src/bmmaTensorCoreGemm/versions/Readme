@@ -54,7 +54,13 @@ Note that this corresponds to computation on a single block.
 
 However, it still does not work for other matrix sizes (e.g., 128x128x1024).
 
+10:
+Fix a bug in write to GL.
 
+Now, it computes correctly for various matrix sizes, since I have manually tested for the following size with rand() initialized A and B:
+    64x128x1024, 64x128x4096, 128x128x4096, 256x128x4096, 256x256x8192, 4096x4096x8192.
+
+For matrix of 4096x4096x8192, the speed is 496.79TOPS.
 
 
 
