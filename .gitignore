@@ -6,3 +6,4 @@
 *.fatbin
 simpleBMMA_CUDA
 cubin
+bin/*

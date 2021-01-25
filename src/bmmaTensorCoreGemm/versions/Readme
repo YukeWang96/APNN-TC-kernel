@@ -46,6 +46,16 @@ Backup. 2021-1-17. 9:59 PM.
 8:
 Fix a bug in block_i and block_j.
 
+9:
+Fix a bug in load_matrix_sync.
+
+Now, it computes correctly for matrix size of 64x64xK, K has been tested from 1024 ~ 8192.
+Note that this corresponds to computation on a single block.
+
+However, it still does not work for other matrix sizes (e.g., 128x128x1024).
+
+
+
 
 
 

@@ -94,9 +94,9 @@
 
 // GEMM configuration.
 
-#define M_TILES 16
-#define N_TILES 16
-#define K_TILES 8
+#define M_TILES 8
+#define N_TILES 8
+#define K_TILES 64
 
 #define M_GLOBAL (M * M_TILES)
 #define N_GLOBAL (N * N_TILES)
