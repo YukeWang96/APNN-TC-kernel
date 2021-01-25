@@ -62,6 +62,9 @@ Now, it computes correctly for various matrix sizes, since I have manually teste
 
 For matrix of 4096x4096x8192, the speed is 496.79TOPS.
 
+11:
+Cleanup.
 
-
+12:
+Repeat 200 times to measure the performance.
 

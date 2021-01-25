@@ -26,9 +26,9 @@
 
 // GEMM configuration.
 
-#define M_TILES 1024
-#define N_TILES 1024
-#define K_TILES 64
+#define M_TILES 128
+#define N_TILES 128
+#define K_TILES 8
 
 #define M_GLOBAL (M * M_TILES)
 #define N_GLOBAL (N * N_TILES)
@@ -361,36 +361,29 @@ int main(int argc, char **argv) {
   checkCudaErrors(cudaMemcpy(B, B_h, sizeof(int4) * N_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
 #endif
 
+  cudaEvent_t start, stop;
+
+  checkCudaErrors(cudaEventCreate(&start));
+  checkCudaErrors(cudaEventCreate(&stop));
+  checkCudaErrors(cudaEventRecord(start));
+
   checkCudaErrors(cudaFuncSetAttribute(
-    compute_gemm_imma, cudaFuncAttributeMaxDynamicSharedMemorySize,
-    SHMEM_SZ));
+      compute_gemm_imma, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      SHMEM_SZ));
+  checkKernelErrors(
+      (compute_gemm_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+                            SHMEM_SZ>>>(A, B, C)));
 
-  // Run ours NUM_PROFILES times and record time.
-  float bmma_ms_avg = 0.0f;
-  for(int iter=0; iter<200; ++iter){
-          float bmma_ms = 0.0f;
-          cudaEvent_t bmma_start;
-          cudaEvent_t bmma_end;
-          cudaEventCreate(&bmma_start);
-          cudaEventCreate(&bmma_end);
-          cudaEventRecord(bmma_start);
-          checkKernelErrors(
-            (compute_gemm_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
-                                  SHMEM_SZ>>>(A, B, C)));
-                cudaEventRecord(bmma_end);
-          cudaEventSynchronize(bmma_end);
-          cudaEventElapsedTime(&bmma_ms, bmma_start, bmma_end);
-          cudaEventDestroy(bmma_start);
-          cudaEventDestroy(bmma_end);
-          bmma_ms_avg += bmma_ms;
-  }
 
-  bmma_ms_avg = bmma_ms_avg/200.0f;
+  checkCudaErrors(cudaEventRecord(stop));
+  checkCudaErrors(cudaEventSynchronize(stop));
 
-  printf("Time: %f ms\n", bmma_ms_avg);
+  float milliseconds = 0;
 
-  printf("TOPS: %.2f\n", (((double)M_GLOBAL * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
+  checkCudaErrors(cudaEventElapsedTime(&milliseconds, start, stop));
 
+  printf("Time: %f ms\n", milliseconds);
+  printf("TOPS: %.2f\n", (((double)M_GLOBAL * N_GLOBAL * K_GLOBAL * 2)/(milliseconds/1000.)) / 1e12);
 
 #ifdef verify_output
   printf("Validating results...\n");
