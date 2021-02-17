@@ -74,4 +74,12 @@ We name this version as BMMA_64
 BMMA_64 with reduce.
 We name this version as BMMA_64_Reduce.
 
+14:
+Initial version of BMMA_32.
+Computation result is wrong now.
+
+15:
+A working version of BMMA_64.
+The computation result is correct.
+
 

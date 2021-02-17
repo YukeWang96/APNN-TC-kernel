@@ -26,9 +26,9 @@
 
 // GEMM configuration.
 
-#define M_TILES 1024
-#define N_TILES 1024
-#define K_TILES 64
+#define M_TILES 128
+#define N_TILES 128
+#define K_TILES 16
 
 #define M_GLOBAL (M * M_TILES)
 #define N_GLOBAL (N * N_TILES)
@@ -312,7 +312,7 @@ void validate_results(int *C, int* ref_C, int M_, int N_) {
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
-// #define verify_output
+#define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");
@@ -375,7 +375,7 @@ int main(int argc, char **argv) {
     SHMEM_SZ));
 
   // Run ours NUM_PROFILES times and record time.
-  int NUM_PROFILES = 200;
+  int NUM_PROFILES = 1;
   float bmma_ms_avg = 0.0f;
   for(int iter=0; iter<NUM_PROFILES; ++iter){
           float bmma_ms = 0.0f;
@@ -409,10 +409,10 @@ int main(int argc, char **argv) {
   int *C_ref = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
 
   /* Copmpute reference matrix on CPU */
-  // compute_ref(A_h, B_h, C_ref);
+  compute_ref(A_h, B_h, C_ref);
 
   /* validation results */
-  // validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL);
+  validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL);
 #endif
 
   free(A_h);
