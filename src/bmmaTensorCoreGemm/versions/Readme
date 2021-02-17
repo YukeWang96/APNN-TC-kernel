@@ -81,5 +81,8 @@ Computation result is wrong now.
 15:
 A working version of BMMA_64.
 The computation result is correct.
+8 Warp. 速度整体都比BMMA_64慢。
 
-
+16:
+Initial version of BMMA_32.
+4 warp. 比version 15快。但整体比version 12慢。
