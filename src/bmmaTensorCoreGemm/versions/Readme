@@ -87,11 +87,16 @@ The computation result is correct.
 Initial version of BMMA_32.
 4 warp. 比version 15快。但整体比version 12慢。
 
-16:
+17:
 Initial version of BMMA_32.
 2 warp. 比version 16快。但整体比version 12慢。
 
+18:
+BMMA_64 which writing directly from FRAG to GL without SHMEM.
+Modified from version 12.
 
-
-
+19:
+BMMA_64 which uses stride 8 in wmma::store_matrix_sync.
+Modified from version 18.
+Slightly faster than version 18, especially on 512 and 1024.
 

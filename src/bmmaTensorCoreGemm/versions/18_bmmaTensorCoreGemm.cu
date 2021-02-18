@@ -196,7 +196,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    size_t gmem_idx = block_tile_i * M * GLOBAL_MEM_STRIDE + block_tile_j * N + warpId * GLOBAL_MEM_STRIDE * 8;
+    size_t gmem_idx = block_tile_i * M * GLOBAL_MEM_STRIDE + block_tile_j * N + (warpId/2) * GLOBAL_MEM_STRIDE * 16 + (warpId%2)*32;
 
     // Now that shared memory contains all the D tiles, stream them to global memory.
     int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
@@ -206,8 +206,8 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     for (int i = 0; i < WARP_COL_TILES; i++) {
 #pragma unroll
       for (int j = 0; j < WARP_ROW_TILES; j++) {
-        int *tile_ptr = dst_gmem_warp_stream_ptr + i * GLOBAL_MEM_STRIDE * 4 + j*GLOBAL_MEM_STRIDE;
-        wmma::store_matrix_sync(tile_ptr, c[i][j], 8, C_LAYOUT);
+        int *tile_ptr = dst_gmem_warp_stream_ptr + i * GLOBAL_MEM_STRIDE * M + j * N;
+        wmma::store_matrix_sync(tile_ptr, c[i][j], GLOBAL_MEM_STRIDE, C_LAYOUT);
       }
     }
 
