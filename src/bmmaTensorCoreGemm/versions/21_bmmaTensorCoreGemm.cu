@@ -14,6 +14,9 @@
 #include <helper_cuda.h>
 #include <helper_functions.h>
 
+#include <cooperative_groups.h>
+#include <cooperative_groups/memcpy_async.h>
+
 // GPU configuration.
 
 #define WARP_SIZE 32
@@ -26,8 +29,8 @@
 
 // GEMM configuration.
 
-#define M_TILES 64
-#define N_TILES 64
+#define M_TILES 128
+#define N_TILES 128
 #define K_TILES 8
 
 #define M_GLOBAL (M * M_TILES)
@@ -51,8 +54,8 @@
 #define BLOCK_ROW_WARPS 2
 #define BLOCK_COL_WARPS 4
 
-#define WARP_ROW_TILES 8
-#define WARP_COL_TILES 4
+#define WARP_ROW_TILES 4
+#define WARP_COL_TILES 2
 
 #define BLOCK_ROW_TILES (WARP_ROW_TILES * BLOCK_ROW_WARPS)
 #define BLOCK_COL_TILES (WARP_COL_TILES * BLOCK_COL_WARPS)
@@ -99,9 +102,11 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
   const unsigned int warpId = threadIdx.x / WARP_SIZE;
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
+  auto group = cooperative_groups::this_thread_block();
+
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_TILES/16) * 16;
-    const unsigned int block_tile_j = block_pos % (N_TILES/16) * 16;
+    const unsigned int block_tile_i = block_pos / (N_TILES/8) * 8;
+    const unsigned int block_tile_j = block_pos % (N_TILES/8) * 8;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
     if (block_tile_i >= M_TILES) {
@@ -117,10 +122,12 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     
     // Select what warp copies what matrix to shared memory.
     // Warps 0-3 copy the A matrix, warps 4-7 copy the B matrix.
-    const int4 *warp_ptr = (warpId < 4) ? (&A[block_tile_i * M * (K_GLOBAL/128)] +
-                                              M * (K_GLOBAL/128) * (warpId % 4) * 4)
-                                           : (&B[block_tile_j * N * (K_GLOBAL/128)] +
-                                              N * (K_GLOBAL/128) * (warpId % 4) * 4);
+    // const int4 *warp_ptr = (warpId < 4) ? (&A[block_tile_i * M * (K_GLOBAL/128)] +
+    //                                           M * (K_GLOBAL/128) * (warpId % 4) * 2)
+    //                                        : (&B[block_tile_j * N * (K_GLOBAL/128)] +
+    //                                           N * (K_GLOBAL/128) * (warpId % 4) * 2);
+    const int4 *block_ptr = &A[block_tile_i * M * (K_GLOBAL/128)];
+                                          //  : (&B[block_tile_j * N * (K_GLOBAL/128)]);
 
     // Go through the global K dimension by a fixed step at a time.
 #pragma unroll
@@ -131,14 +138,17 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       // Copy slices of the A and B matrices to shared memory.
       // The first half of the warps in the CTA copy the A matrix, the rest copy
       // the B matrix.
-      size_t shmem_idx =
-          warpId < (WARPS_PER_BLOCK / 2)
-              ? (M * (warpId % (WARPS_PER_BLOCK / 2)) * 4)
-              : (N * (warpId % (WARPS_PER_BLOCK / 2)) * 4 + shmem_idx_b_off);
+      size_t shmem_idx = 0;
+          // warpId < (WARPS_PER_BLOCK / 2)
+          //     ? (M * (warpId % (WARPS_PER_BLOCK / 2)) * 2)
+          //     : (N * (warpId % (WARPS_PER_BLOCK / 2)) * 2 + shmem_idx_b_off);
 
       // First half of the warp copies the first row / column of the matrix,
       // the second half of the warp copies the next.
-      int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128)); // (K/128), since K=128 in bit. int4 is 128 bit.
+      // int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128));
+      //  +
+      //                           (laneId / CHUNK_COPY_LINE_LANES) * (K_GLOBAL/128)) +
+      //                  (laneId % CHUNK_COPY_LINE_LANES); // (K/128), since K=128 in bit. int4 is 128 bit.
                        
       // Shift the second half of the warp to the next row / column in the
       // shared memory.
@@ -146,21 +156,43 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       int4 *shmem_ptr = &shmem[shmem_idx][0];
 
 #pragma unroll
-      for (int i = 0; i < (32 / CHUNK_COPY_LINES_PER_WARP); i++) {
+      for (int i = 0; i < 2; i++) {
         // Copy 16 bytes at once in each lane.
-        *(shmem_ptr+laneId) = *(lane_ptr+laneId);
-        
+        // *(shmem_ptr+laneId) = *(block_ptr+laneId);
+        cooperative_groups::memcpy_async(group, shmem_ptr,
+          block_ptr, sizeof(int4) * group.size());
 
         // *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
         //     *lane_ptr;
-
+        cooperative_groups::wait(group); // Wait for all copies to complete
         // Advance the global memory pointer and the shared memory index.
-        lane_ptr = (int4 *)(lane_ptr + 32);
+        block_ptr = block_ptr + 32*8;
                             // (K_GLOBAL/128) * CHUNK_COPY_LINES_PER_WARP);
-        shmem_idx += CHUNK_COPY_LINES_PER_WARP;
+        shmem_idx += 32;
+        shmem_ptr = &shmem[shmem_idx][0];
       }
 
-      __syncthreads();
+      // __syncthreads();
+
+      block_ptr = &B[block_tile_j * N * (K_GLOBAL/128)];
+#pragma unroll
+      for (int i = 0; i < 2; i++) {
+        // Copy 16 bytes at once in each lane.
+        // *(shmem_ptr+laneId) = *(block_ptr+laneId);
+        cooperative_groups::memcpy_async(group, shmem_ptr,
+          block_ptr, sizeof(int4) * group.size());
+
+        // *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
+        //     *lane_ptr;
+        cooperative_groups::wait(group); // Wait for all copies to complete
+        // Advance the global memory pointer and the shared memory index.
+        block_ptr = block_ptr + 32*8;
+                            // (K_GLOBAL/128) * CHUNK_COPY_LINES_PER_WARP);
+        shmem_idx += 32;
+        shmem_ptr = &shmem[shmem_idx][0];
+      }
+
+      // __syncthreads();
 
       // Compute a grid of C matrix tiles in each warp.
 #pragma unroll
@@ -170,7 +202,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
 #pragma unroll
         for (int i = 0; i < WARP_COL_TILES; i++) {
-          size_t shmem_idx_a = (warpId / 2) * M * 4 + (i * M);
+          size_t shmem_idx_a = (warpId / 2) * M * 2 + (i * M);
           const int4 *tile_ptr = &shmem[shmem_idx_a][k_step];
 
           wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
@@ -195,11 +227,10 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       }
       __syncthreads();
     }
-
-
+    
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    size_t gmem_idx = block_tile_i * M * GLOBAL_MEM_STRIDE + block_tile_j * N + (warpId/2) * GLOBAL_MEM_STRIDE * 32 + (warpId%2)*64;
+    size_t gmem_idx = block_tile_i * M * GLOBAL_MEM_STRIDE + block_tile_j * N + warpId * GLOBAL_MEM_STRIDE * 8;
 
     // Now that shared memory contains all the D tiles, stream them to global memory.
     int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
@@ -209,12 +240,13 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     for (int i = 0; i < WARP_COL_TILES; i++) {
 #pragma unroll
       for (int j = 0; j < WARP_ROW_TILES; j++) {
-        int *tile_ptr = dst_gmem_warp_stream_ptr + i * GLOBAL_MEM_STRIDE * M + j * N;
-        wmma::store_matrix_sync(tile_ptr, c[i][j], GLOBAL_MEM_STRIDE, C_LAYOUT);
+        int *tile_ptr = dst_gmem_warp_stream_ptr + i * GLOBAL_MEM_STRIDE * 4 + j*GLOBAL_MEM_STRIDE;
+        wmma::store_matrix_sync(tile_ptr, c[i][j], 8, C_LAYOUT);
       }
     }
 
     __syncthreads();
+
   }
 }
 
@@ -283,7 +315,7 @@ void validate_results(int *C, int* ref_C, int M_, int N_) {
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
-#define verify_output
+// #define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");

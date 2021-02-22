@@ -26,8 +26,8 @@
 
 // GEMM configuration.
 
-#define M_TILES 64
-#define N_TILES 64
+#define M_TILES 128
+#define N_TILES 128
 #define K_TILES 8
 
 #define M_GLOBAL (M * M_TILES)
@@ -138,25 +138,23 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
       // First half of the warp copies the first row / column of the matrix,
       // the second half of the warp copies the next.
-      int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128)); // (K/128), since K=128 in bit. int4 is 128 bit.
+      int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128) +
+                                (laneId / CHUNK_COPY_LINE_LANES) * (K_GLOBAL/128)) +
+                       (laneId % CHUNK_COPY_LINE_LANES); // (K/128), since K=128 in bit. int4 is 128 bit.
                        
       // Shift the second half of the warp to the next row / column in the
       // shared memory.
-      // shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
-      int4 *shmem_ptr = &shmem[shmem_idx][0];
+      shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
 
 #pragma unroll
       for (int i = 0; i < (32 / CHUNK_COPY_LINES_PER_WARP); i++) {
         // Copy 16 bytes at once in each lane.
-        *(shmem_ptr+laneId) = *(lane_ptr+laneId);
-        
-
-        // *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
-        //     *lane_ptr;
+        *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
+            *lane_ptr;
 
         // Advance the global memory pointer and the shared memory index.
-        lane_ptr = (int4 *)(lane_ptr + 32);
-                            // (K_GLOBAL/128) * CHUNK_COPY_LINES_PER_WARP);
+        lane_ptr = (int4 *)(lane_ptr +
+                            (K_GLOBAL/128) * CHUNK_COPY_LINES_PER_WARP);
         shmem_idx += CHUNK_COPY_LINES_PER_WARP;
       }
 
@@ -195,26 +193,43 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       }
       __syncthreads();
     }
-
-
-    // This warp's pointer to the C matrix data to copy memory from to shared memory. 
-    // TODO: May be moved outside the for loop.
-    size_t gmem_idx = block_tile_i * M * GLOBAL_MEM_STRIDE + block_tile_j * N + (warpId/2) * GLOBAL_MEM_STRIDE * 32 + (warpId%2)*64;
-
-    // Now that shared memory contains all the D tiles, stream them to global memory.
-    int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
+    
+    // This pointer is used to access the C and D matrix tiles this warp computes.
+    int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
+                              (warpId / 2) * SHMEM_STRIDE * M * 4 +
+                              (warpId % 2) * SHMEM_OFFSET; // Will be used only when writing back D. May be moved outside the for loop. TODO.
 
     // Store the D fragments to shared memory.
 #pragma unroll
     for (int i = 0; i < WARP_COL_TILES; i++) {
 #pragma unroll
       for (int j = 0; j < WARP_ROW_TILES; j++) {
-        int *tile_ptr = dst_gmem_warp_stream_ptr + i * GLOBAL_MEM_STRIDE * M + j * N;
-        wmma::store_matrix_sync(tile_ptr, c[i][j], GLOBAL_MEM_STRIDE, C_LAYOUT);
+        int *tile_ptr = shmem_warp_tile_ptr + i * SHMEM_STRIDE * M + j * N;
+        wmma::store_matrix_sync(tile_ptr, c[i][j], SHMEM_STRIDE, C_LAYOUT);
       }
     }
 
     __syncthreads();
+
+//     // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
+//     // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
+//     const size_t idx = warpId * SHMEM_STRIDE * M * 2 + laneId*4;
+//     int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
+
+//     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
+//     // TODO: May be moved outside the for loop.
+//     size_t gmem_idx = (block_tile_i + 2*warpId) * M * GLOBAL_MEM_STRIDE + block_tile_j * N + laneId*4;
+
+//     // Now that shared memory contains all the D tiles, stream them to global memory.
+//     int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
+
+// #pragma unroll
+//     for (int i = 0; i < 16; i++) {
+//       *((int4 *)(dst_gmem_warp_stream_ptr + GLOBAL_MEM_STRIDE * i)) =
+//       *((int4 *)(shmem_warp_stream_ptr + i*SHMEM_STRIDE));
+//     }
+
+//     __syncthreads();
   }
 }
 

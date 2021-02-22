@@ -26,9 +26,9 @@
 
 // GEMM configuration.
 
-#define M_TILES 64
-#define N_TILES 64
-#define K_TILES 8
+#define M_TILES 1024
+#define N_TILES 1024
+#define K_TILES 64
 
 #define M_GLOBAL (M * M_TILES)
 #define N_GLOBAL (N * N_TILES)
@@ -138,25 +138,23 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
       // First half of the warp copies the first row / column of the matrix,
       // the second half of the warp copies the next.
-      int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128)); // (K/128), since K=128 in bit. int4 is 128 bit.
+      int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128) +
+                                (laneId / CHUNK_COPY_LINE_LANES) * (K_GLOBAL/128)) +
+                       (laneId % CHUNK_COPY_LINE_LANES); // (K/128), since K=128 in bit. int4 is 128 bit.
                        
       // Shift the second half of the warp to the next row / column in the
       // shared memory.
-      // shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
-      int4 *shmem_ptr = &shmem[shmem_idx][0];
+      shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
 
 #pragma unroll
       for (int i = 0; i < (32 / CHUNK_COPY_LINES_PER_WARP); i++) {
         // Copy 16 bytes at once in each lane.
-        *(shmem_ptr+laneId) = *(lane_ptr+laneId);
-        
-
-        // *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
-        //     *lane_ptr;
+        *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
+            *lane_ptr;
 
         // Advance the global memory pointer and the shared memory index.
-        lane_ptr = (int4 *)(lane_ptr + 32);
-                            // (K_GLOBAL/128) * CHUNK_COPY_LINES_PER_WARP);
+        lane_ptr = (int4 *)(lane_ptr +
+                            (K_GLOBAL/128) * CHUNK_COPY_LINES_PER_WARP);
         shmem_idx += CHUNK_COPY_LINES_PER_WARP;
       }
 

@@ -100,3 +100,29 @@ BMMA_64 which uses stride 8 in wmma::store_matrix_sync.
 Modified from version 18.
 Slightly faster than version 18, especially on 512 and 1024.
 
+20:
+BMMA_64 which uses new format (i.e., continuous GL memory layout).
+Modified from version 19.
+This is 10% faster than version 19.
+
+21:
+BMMA_64. 加了async_memcpy. 
+Modified from Version 20.
+反而变慢了很多。
+
+22:
+BMMA_128. tiling size: 128x128.
+Modified from Version 12
+
+23:
+BMMA_128 which writing directly from FRAG to GL without SHMEM.
+Modified from Version 22.
+在1024时比22快。其他没有测。
+
+24:
+BMMA_128 which uses new format (i.e., continuous GL memory layout).
+Modified from Version 23.
+整体比v23快。注意到，在小matrix (e.g., 512x512)上，BMMA_128显著慢于BMMA_64.
+
+
+
