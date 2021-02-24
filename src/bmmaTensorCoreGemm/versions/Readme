@@ -124,5 +124,14 @@ BMMA_128 which uses new format (i.e., continuous GL memory layout).
 Modified from Version 23.
 整体比v23快。注意到，在小matrix (e.g., 512x512)上，BMMA_128显著慢于BMMA_64.
 
+25:
+This is a micro-benchmark on the performance of an Ampere new feature on "Asynchronous data movement".
+https://developer.nvidia.com/blog/controlling-data-movement-to-boost-performance-on-ampere-architecture/
 
+Using this new feature, the time for reading the same data from GL to SHMEM increases from 0.10735 ms to 0.112201 ms.
+
+I asked a question here. But no one answers.
+https://forums.developer.nvidia.com/t/fine-grained-address-control-in-cooperative-groups-memcpy-async/168768
+
+Considering that this cannot be a significant contribution, I will not investigate more on this feature.
 
