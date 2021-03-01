@@ -135,3 +135,8 @@ https://forums.developer.nvidia.com/t/fine-grained-address-control-in-cooperativ
 
 Considering that this cannot be a significant contribution, I will not investigate more on this feature.
 
+26:
+A uncomplete CONV.
+Can compile and run with no error.
+Given a 256x256x128 image, COUT as 128, 2-bit for both weights and features, the TOPS is 372.
+
