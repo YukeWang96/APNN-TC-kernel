@@ -73,6 +73,7 @@ We name this version as BMMA_64
 13:
 BMMA_64 with reduce.
 We name this version as BMMA_64_Reduce.
+Computation result is correct.
 
 14:
 Initial version of BMMA_32.
@@ -155,6 +156,10 @@ Now, it computes correctly for various matrix sizes, since I have manually teste
 
 29:
 APNN-2bit x 2bit. Modified from V28.
+Results are validated.
+
+30:
+APNN-W1-A2. Modified from V13. Tiling Size: 64x64
 Results are validated.
 
 

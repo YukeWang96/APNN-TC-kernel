@@ -26,8 +26,8 @@
 
 // GEMM configuration.
 
-#define M_TILES 64
-#define N_TILES 64
+#define M_TILES 128
+#define N_TILES 128
 #define K_TILES 8
 
 #define M_GLOBAL (M * M_TILES)
@@ -188,7 +188,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
             }
             // printf("ckpt4\n");
 
-            wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j]);
+            wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j], bmmaBitOpAND);
           }
         }
       }
@@ -214,59 +214,72 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
     // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
     // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
-    size_t idx;
-    if(laneId < 16) {
-      idx = warpId * SHMEM_STRIDE * M + laneId*4;
-    } else {
-      idx = warpId * SHMEM_STRIDE * M + (laneId-16)*4 + 4*SHMEM_STRIDE;
-    }
+    size_t idx = warpId * 8 * 64 + (laneId%16) * 4 + (laneId/16)*2*64;
+
     int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
 
-    int val00 = *shmem_warp_stream_ptr + (*(shmem_warp_stream_ptr+1))*2
-                +(*(shmem_warp_stream_ptr+SHMEM_STRIDE))*2 + (*(shmem_warp_stream_ptr+SHMEM_STRIDE+1))*4;
+    int val[4];
 
-    int val01 = *(shmem_warp_stream_ptr+2) + (*(shmem_warp_stream_ptr+3))*2
-                +(*(shmem_warp_stream_ptr+2+SHMEM_STRIDE))*2 + (*(shmem_warp_stream_ptr+SHMEM_STRIDE+3))*4;
+    typedef union {
+      int4 vec;
+      int a[4];
+    } U4;
+    U4 tmp0;
+    U4 tmp1;
 
-    int val10 = *(shmem_warp_stream_ptr+2*SHMEM_OFFSET) + (*(shmem_warp_stream_ptr+1+2*SHMEM_OFFSET))*2
-                +(*(shmem_warp_stream_ptr+3*SHMEM_STRIDE))*2 + (*(shmem_warp_stream_ptr+3*SHMEM_STRIDE+1))*4;
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+      tmp0.vec = *((int4*)shmem_warp_stream_ptr);
+      tmp1.vec = *((int4*)shmem_warp_stream_ptr+16);
 
-    int val11 = *(shmem_warp_stream_ptr+2*SHMEM_OFFSET+2) + (*(shmem_warp_stream_ptr+3+2*SHMEM_OFFSET))*2
-                +(*(shmem_warp_stream_ptr+3*SHMEM_STRIDE+2))*2 + (*(shmem_warp_stream_ptr+3*SHMEM_STRIDE+2))*4;
-
-    __syncthreads();
-
-    if(laneId < 16) {
-      idx = warpId * SHMEM_STRIDE * M/2 + laneId*2;
-    } else {
-      idx = warpId * SHMEM_STRIDE * M/2 + (laneId-16)*2 + 2*SHMEM_STRIDE;
+      // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+      //   for(int i = 0; i < 4; i++) {
+      //     printf("tmp0.a[%d], %d ", 3-i, tmp0.a[3-i]);
+      //   }
+      //   printf("\n");
+      //   for(int i = 0; i < 4; i++) {
+      //     printf("tmp1.a[%d], %d ", 3-i, tmp1.a[3-i]);
+      //   }
+      //   printf("\n");
+      // }
+  
+      val[2*i] = tmp0.a[0] + 2*tmp0.a[1] + 2*tmp1.a[0] + 4*tmp1.a[1];
+      val[2*i+1] = tmp0.a[2] + 2*tmp0.a[3] + 2*tmp1.a[2] + 4*tmp1.a[3];
+      // printf("val0: %d, val1: %d\n", val[2*i], val[2*i+1]);
+      shmem_warp_stream_ptr += 4*64;
     }
-    shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
-    *shmem_warp_tile_ptr = val00;
-    *(shmem_warp_tile_ptr+1) = val01;
-    *(shmem_warp_tile_ptr+SHMEM_STRIDE) = val10;
-    *(shmem_warp_tile_ptr+SHMEM_STRIDE+1) = val11;
+
     __syncthreads();
 
-    shmem_warp_stream_ptr = (int*)&shmem[0][0]+warpId * SHMEM_STRIDE * M/2 + laneId*4;
+    idx = warpId * 4 * 32 + (laneId%16) * 2 + (laneId/16)*32;
+    shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
+#pragma unroll
+    for(int i = 0; i < 2; i++) {
+      *shmem_warp_stream_ptr = val[2*i];
+      *(shmem_warp_stream_ptr+1) = val[2*i+1];
+      shmem_warp_stream_ptr += 64;
+    }
+    __syncthreads();
+
+    // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+    //   for(int i = 0; i < 2; i++) {
+    //     for(int j = 0; j < 2; j++) {
+    //       printf("%d ", *((int*)&shmem[0][0]+i*64+j));
+    //     }
+    //     printf("\n");
+    //   }
+    // }
+
+    shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x*4;
 
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    size_t gmem_idx;
-    if(laneId < 8) {
-      gmem_idx = (block_tile_i + warpId) * M/2 * GLOBAL_MEM_STRIDE/2 + block_tile_j * N/2 + laneId*4;
-    } else if (laneId >= 8 and laneId < 16) {
-      gmem_idx = (block_tile_i + warpId) * M/2 * GLOBAL_MEM_STRIDE/2 + block_tile_j * N/2 + GLOBAL_MEM_STRIDE/2 + (laneId-8)*4;
-    } else if (laneId >= 16 and laneId < 24) {
-      gmem_idx = (block_tile_i + warpId) * M/2 * GLOBAL_MEM_STRIDE/2 + block_tile_j * N/2 + 2*GLOBAL_MEM_STRIDE/2 + (laneId-16)*4;
-    } else{
-      gmem_idx = (block_tile_i + warpId) * M/2 * GLOBAL_MEM_STRIDE/2 + block_tile_j * N/2 + 3*GLOBAL_MEM_STRIDE/2 + (laneId-24)*4;
-    }
-
+    size_t gmem_idx = block_tile_i*M/2*N_GLOBAL/2 + block_tile_j*N/2 + warpId*4*N_GLOBAL/2 + (laneId%8)*4 + (laneId/8)*N_GLOBAL/2;
+    
     // Now that shared memory contains all the D tiles, stream them to global memory.
     int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
     
-    *((int4 *)dst_gmem_warp_stream_ptr) = *((int4 *)shmem_warp_stream_ptr);
+    *((int4 *)(dst_gmem_warp_stream_ptr)) = *((int4 *)(shmem_warp_stream_ptr));
 
     __syncthreads();
   }
@@ -277,13 +290,16 @@ void init_matrices(int4 *A, int4 *B){
   int *B_int = (int*) B;
   for(int i = 0; i < M_GLOBAL; i++) {
     for(int j = 0; j < K_GLOBAL/32; j++) {
+      // A_int[i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+      // A_int[i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
       A_int[i*K_GLOBAL/32+j] = rand();
     }
   }
 
   for(int i = 0; i < N_GLOBAL; i++) {
     for(int j = 0; j < K_GLOBAL/32; j++) {
-      B_int[i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+      // B_int[i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+      // B_int[i*K_GLOBAL/32+j] = i;
       B_int[i*K_GLOBAL/32+j] = rand();
     }
   }
@@ -314,6 +330,43 @@ void compute_ref(int4 *A, int4 *B, int *ref_C) {
   }
 }
 
+void compute_ref_w2a2(int4 *A, int4 *B, int *ref_C) {
+  int *A_int = (int*) A;
+  int *B_int = (int*) B;
+
+  for (int m = 0; m < M_GLOBAL/2; m++) {
+    for (int n = 0; n < N_GLOBAL/2; n++) {
+      int tmp = 0;
+      for (int k = 0; k < K_GLOBAL; k += 32) {
+        int val10 = A_int[(2*m*K_GLOBAL + k)/32];
+        int val11 = A_int[((2*m+1)*K_GLOBAL + k)/32];
+        int val20 = B_int[(2*n*K_GLOBAL + k)/32];
+        int val21 = B_int[((2*n+1)*K_GLOBAL + k)/32];
+        int mask = 1;
+        // if (m == 0 && n == 0) {
+        //   printf("val10: %d, val11: %d, val20: %d, val21: %d\n", val10, val11, val20, val21);
+        // }
+        for (int shift_i =0; shift_i < 32; ++shift_i) {
+          int A_val0 = (val10 & mask) >> shift_i;
+          int A_val1 = (val11 & mask) >> shift_i;
+          int A_val = A_val0 + A_val1*2;
+          int B_val0 = (val20 & mask) >> shift_i;
+          int B_val1 = (val21 & mask) >> shift_i;
+          int B_val = B_val0 + B_val1*2;
+          tmp += (A_val * B_val);
+          // if (m == 0 && n == 0) {
+          //   printf("m: %d, n: %d, A_val0: %d, A_val1: %d, B_val0: %d, B_val1: %d, A_val: %d, B_val: %d, tmp: %d\n", m, n, A_val0, A_val1, B_val0, B_val1, A_val, B_val, tmp);
+          // }
+          mask *= 2;
+        }
+      }
+      // ref_C[m * K + n]= K - 2 * tmp;
+      ref_C[m * N_GLOBAL/2 + n]= tmp;
+    }
+  }
+}
+
+
 
 void validate_results(int *C, int* ref_C, int M_, int N_) {
   printf("Checking computed result for correctness: ");
@@ -337,7 +390,9 @@ void validate_results(int *C, int* ref_C, int M_, int N_) {
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
-#define verify_output
+
+
+// #define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");
@@ -401,7 +456,8 @@ int main(int argc, char **argv) {
 
   // Run ours NUM_PROFILES times and record time.
   float bmma_ms_avg = 0.0f;
-  for(int iter=0; iter<200; ++iter){
+  int NUM_PROFILES = 200;
+  for(int iter=0; iter<NUM_PROFILES; ++iter){
           float bmma_ms = 0.0f;
           cudaEvent_t bmma_start;
           cudaEvent_t bmma_end;
@@ -419,11 +475,11 @@ int main(int argc, char **argv) {
           bmma_ms_avg += bmma_ms;
   }
 
-  bmma_ms_avg = bmma_ms_avg/200.0f;
+  bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
 
   printf("Time: %f ms\n", bmma_ms_avg);
 
-  printf("TOPS: %.2f\n", (((double)M_GLOBAL * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
+  printf("TOPS: %.2f\n", (((double)(M_GLOBAL/2) * (N_GLOBAL/2) * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
 
 
 #ifdef verify_output
@@ -433,10 +489,10 @@ int main(int argc, char **argv) {
   int *C_ref = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
 
   /* Copmpute reference matrix on CPU */
-  // compute_ref(A_h, B_h, C_ref);
+  compute_ref_w2a2(A_h, B_h, C_ref);
 
   /* validation results */
-  // validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL);
+  validate_results(C_h, C_ref, M_GLOBAL/2, N_GLOBAL/2);
 #endif
 
   free(A_h);

@@ -26,9 +26,9 @@
 
 // GEMM configuration.
 
-#define M_TILES 2048
-#define N_TILES 4096
-#define K_TILES 128
+#define M_TILES 128
+#define N_TILES 128
+#define K_TILES 8
 
 #define M_GLOBAL (M * M_TILES)
 #define N_GLOBAL (N * N_TILES)
@@ -41,7 +41,7 @@
 #define WARPS_PER_BLOCK 8
 #define THREADS_PER_BLOCK (WARP_SIZE * WARPS_PER_BLOCK)
 
-#define CHUNK_K 8
+#define CHUNK_K 4
 
 #define CHUNK_LINE_BYTES (CHUNK_K * sizeof(int4))
 #define WARP_COPY_BYTES (WARP_SIZE * sizeof(int4))
