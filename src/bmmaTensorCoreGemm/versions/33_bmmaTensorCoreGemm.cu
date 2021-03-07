@@ -27,7 +27,7 @@
 // GEMM configuration.
 
 #define M_TILES 2048
-#define N_TILES 16384
+#define N_TILES 8192
 #define K_TILES 128
 
 #define M_GLOBAL (M * M_TILES)
@@ -51,8 +51,8 @@
 #define BLOCK_ROW_WARPS 2
 #define BLOCK_COL_WARPS 4
 
-#define WARP_ROW_TILES 8
-#define WARP_COL_TILES 4
+#define WARP_ROW_TILES 4
+#define WARP_COL_TILES 2
 
 #define BLOCK_ROW_TILES (WARP_ROW_TILES * BLOCK_ROW_WARPS)
 #define BLOCK_COL_TILES (WARP_COL_TILES * BLOCK_COL_WARPS)
@@ -100,8 +100,8 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_TILES/16) * 16;
-    const unsigned int block_tile_j = block_pos % (N_TILES/16) * 16;
+    const unsigned int block_tile_i = block_pos / (N_TILES/8) * 8;
+    const unsigned int block_tile_j = block_pos % (N_TILES/8) * 8;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
     if (block_tile_i >= M_TILES) {
@@ -118,9 +118,10 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     // Select what warp copies what matrix to shared memory.
     // Warps 0-3 copy the A matrix, warps 4-7 copy the B matrix.
     const int4 *warp_ptr = (warpId < 4) ? (&A[block_tile_i * M * (K_GLOBAL/128)] +
-                                              M * (K_GLOBAL/128) * (warpId % 4) * 4)
+                                              M * (K_GLOBAL/128) * (warpId % 4) * 2)
                                            : (&B[block_tile_j * N * (K_GLOBAL/128)] +
-                                              N * (K_GLOBAL/128) * (warpId % 4) * 4);
+                                              N * (K_GLOBAL/128) * (warpId % 4) * 2);
+
 
     // Go through the global K dimension by a fixed step at a time.
 #pragma unroll
@@ -133,8 +134,8 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       // the B matrix.
       size_t shmem_idx =
           warpId < (WARPS_PER_BLOCK / 2)
-              ? (M * (warpId % (WARPS_PER_BLOCK / 2)) * 4)
-              : (N * (warpId % (WARPS_PER_BLOCK / 2)) * 4 + shmem_idx_b_off);
+              ? (M * (warpId % (WARPS_PER_BLOCK / 2)) * 2)
+              : (N * (warpId % (WARPS_PER_BLOCK / 2)) * 2 + shmem_idx_b_off);
 
       // First half of the warp copies the first row / column of the matrix,
       // the second half of the warp copies the next.
@@ -147,7 +148,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
 
 #pragma unroll
-      for (int i = 0; i < (32 / CHUNK_COPY_LINES_PER_WARP); i++) {
+      for (int i = 0; i < ((WARP_SIZE / 2) / CHUNK_COPY_LINES_PER_WARP); i++) {
         // Copy 16 bytes at once in each lane.
         *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
             *lane_ptr;
@@ -168,7 +169,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
 #pragma unroll
         for (int i = 0; i < WARP_COL_TILES; i++) {
-          size_t shmem_idx_a = (warpId / 2) * M * 4 + (i * M);
+          size_t shmem_idx_a = (warpId / 2) * M * 2 + (i * M);
           const int4 *tile_ptr = &shmem[shmem_idx_a][k_step];
 
           wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
@@ -196,7 +197,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     
     // This pointer is used to access the C and D matrix tiles this warp computes.
     int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
-                              (warpId / 2) * SHMEM_STRIDE * M * 4 +
+                              (warpId / 2) * SHMEM_STRIDE * M * 2 +
                               (warpId % 2) * SHMEM_OFFSET; // Will be used only when writing back D. May be moved outside the for loop. TODO.
 
     // Store the D fragments to shared memory.
@@ -211,34 +212,23 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
     __syncthreads();
 
-    // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-    //   for(int i = 0; i < 2; i++) {
-    //     for(int j = 0; j < 2; j++) {
-    //       printf("%d ", *((int*)&shmem[0][0]+i*128+j));
-    //     }
-    //     printf("\n");
-    //   }
-    // }
-
     // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
     // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
-    size_t idx = warpId * 16 * 128 + laneId * 8;
+    size_t idx = warpId * 8 * 64 + (laneId%16) * 4 + (laneId/16)*64;
 
     int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
 
-    int val[8];
+    int val[4];
 
     typedef union {
       int4 vec;
       int a[4];
     } U4;
     U4 tmp0;
-    U4 tmp1;
 
 #pragma unroll
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 4; i++) {
       tmp0.vec = *((int4*)shmem_warp_stream_ptr);
-      tmp1.vec = *((int4*)shmem_warp_stream_ptr+1);
 
       // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
       //   for(int i = 0; i < 4; i++) {
@@ -251,17 +241,17 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       //   printf("\n");
       // }
   
-      val[i] = tmp0.a[0] + 2*tmp0.a[1] + 4*tmp0.a[2] + 8*tmp0.a[3] + 16*tmp1.a[0] + 32*tmp1.a[1] + 64*tmp1.a[2] + 128*tmp1.a[3];
+      val[i] = tmp0.a[0] + 2*tmp0.a[1] + 4*tmp0.a[2] + 8*tmp0.a[3];
       // printf("val0: %d, val1: %d\n", val[2*i], val[2*i+1]);
-      shmem_warp_stream_ptr += 128*2;
+      shmem_warp_stream_ptr += 2*64;
     }
 
     __syncthreads();
 
-    idx = warpId * 16 * 16 + laneId;
+    idx = warpId * 8 * 16 + laneId;
     shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
 #pragma unroll
-    for(int i = 0; i < 8; i++) {
+    for(int i = 0; i < 4; i++) {
       *shmem_warp_stream_ptr = val[i];
       shmem_warp_stream_ptr += 32;
     }
@@ -276,20 +266,16 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     //   }
     // }
 
-    shmem_warp_stream_ptr = (int*)&shmem[0][0]+warpId * 8 * 16 + laneId*4;
+    shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x*4;
 
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    size_t gmem_idx = block_tile_i*M*N_GLOBAL/8 + block_tile_j*N/8 + warpId*8*N_GLOBAL/8 + (laneId%4)*4 + (laneId/4)*N_GLOBAL/8;
+    size_t gmem_idx = block_tile_i*M*N_GLOBAL/4 + block_tile_j*N/4 + (threadIdx.x/4)*N_GLOBAL/4 + (threadIdx.x%4)*4;
     
     // Now that shared memory contains all the D tiles, stream them to global memory.
     int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
-
-#pragma unroll
-    for (int i = 0; i < 2; i++) {
-      *((int4 *)(dst_gmem_warp_stream_ptr + 64*i*N_GLOBAL/4)) =
-      *((int4 *)(shmem_warp_stream_ptr + i*64*16));
-    }
+    
+    *((int4 *)(dst_gmem_warp_stream_ptr)) = *((int4 *)(shmem_warp_stream_ptr));
 
     __syncthreads();
   }
@@ -471,116 +457,115 @@ void validate_results(int *C, int* ref_C, int M_, int N_) {
 
 
 
-
 // #define verify_output
 
 int main(int argc, char **argv) {
-  printf("Initializing...\n");
+printf("Initializing...\n");
 
-  int dev = findCudaDevice(argc, (const char **)argv);
+int dev = findCudaDevice(argc, (const char **)argv);
 
-  cudaDeviceProp deviceProp;
-  checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
+cudaDeviceProp deviceProp;
+checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  printf("M: %d (%d x %d)\n", M_GLOBAL, M, M_TILES);
-  printf("N: %d (%d x %d)\n", N_GLOBAL, N, N_TILES);
-  printf("K: %d (%d x %d)\n", K_GLOBAL, K, K_TILES);
+printf("M: %d (%d x %d)\n", M_GLOBAL, M, M_TILES);
+printf("N: %d (%d x %d)\n", N_GLOBAL, N, N_TILES);
+printf("K: %d (%d x %d)\n", K_GLOBAL, K, K_TILES);
 
-  int4 *A_h = NULL;
-  int4 *B_h = NULL;
-  int *C_h = NULL;
+int4 *A_h = NULL;
+int4 *B_h = NULL;
+int *C_h = NULL;
 
-  A_h = (int4 *)malloc(sizeof(int4) * M_GLOBAL * (K_GLOBAL/128));
-  B_h = (int4 *)malloc(sizeof(int4) * (K_GLOBAL/128) * N_GLOBAL);
-  C_h = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
+A_h = (int4 *)malloc(sizeof(int4) * M_GLOBAL * (K_GLOBAL/128));
+B_h = (int4 *)malloc(sizeof(int4) * (K_GLOBAL/128) * N_GLOBAL);
+C_h = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
 
-  int4 *A = NULL;
-  int4 *B = NULL;
-  int *C = NULL;
+int4 *A = NULL;
+int4 *B = NULL;
+int *C = NULL;
 
-  checkCudaErrors(
-    cudaMalloc(reinterpret_cast<void **>(&A), sizeof(int4) * M_GLOBAL * (K_GLOBAL/128)));
-  checkCudaErrors(
-    cudaMalloc(reinterpret_cast<void **>(&B), sizeof(int4) * N_GLOBAL * (K_GLOBAL/128)));
-  checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&C), sizeof(int) * M_GLOBAL * N_GLOBAL));
+checkCudaErrors(
+   cudaMalloc(reinterpret_cast<void **>(&A), sizeof(int4) * M_GLOBAL * (K_GLOBAL/128)));
+checkCudaErrors(
+   cudaMalloc(reinterpret_cast<void **>(&B), sizeof(int4) * N_GLOBAL * (K_GLOBAL/128)));
+checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&C), sizeof(int) * M_GLOBAL * N_GLOBAL));
 
-  assert(((unsigned long long)A) % 128 == 0);
-  assert(((unsigned long long)B) % 128 == 0);
-  assert(((unsigned long long)C) % 128 == 0);
+assert(((unsigned long long)A) % 128 == 0);
+assert(((unsigned long long)B) % 128 == 0);
+assert(((unsigned long long)C) % 128 == 0);
 
-  enum {
-  // Compute the right amount of shared memory to request.
-  // We need shared memory to hold per-CTA C and D matrix tiles, and to cache
-  // per-CTA chunks
-  // of the A and B matrices. Therefore, the right amount to request is the
-  // maximum of those
-  // two numbers.
-  SHMEM_SZ = MAX(sizeof(int4) * (BLOCK_COL_TILES * M) *
-                      (CHUNK_K * (K/128) + SKEW) * 2,
-                  M * (BLOCK_ROW_WARPS * WARP_ROW_TILES) * N *
-                      (BLOCK_COL_WARPS * WARP_COL_TILES) * sizeof(int))
-  };
+enum {
+ // Compute the right amount of shared memory to request.
+ // We need shared memory to hold per-CTA C and D matrix tiles, and to cache
+ // per-CTA chunks
+ // of the A and B matrices. Therefore, the right amount to request is the
+ // maximum of those
+ // two numbers.
+ SHMEM_SZ = MAX(sizeof(int4) * (BLOCK_COL_TILES * M) *
+                    (CHUNK_K * (K/128) + SKEW) * 2,
+                M * (BLOCK_ROW_WARPS * WARP_ROW_TILES) * N *
+                    (BLOCK_COL_WARPS * WARP_COL_TILES) * sizeof(int))
+};
 
-  printf("Required shared memory size: %lu Kb\n", SHMEM_SZ / 1024UL);
-
-#ifdef verify_output
-  printf("Preparing validation data for GPU...\n");
-  init_matrices(A_h, B_h);
-  checkCudaErrors(cudaMemcpy(A, A_h, sizeof(int4) * M_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
-  checkCudaErrors(cudaMemcpy(B, B_h, sizeof(int4) * N_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
-#endif
-
-  checkCudaErrors(cudaFuncSetAttribute(
-  compute_gemm_imma, cudaFuncAttributeMaxDynamicSharedMemorySize,
-  SHMEM_SZ));
-
-  // Run ours NUM_PROFILES times and record time.
-  float bmma_ms_avg = 0.0f;
-  int NUM_PROFILES = 200;
-  for(int iter=0; iter<NUM_PROFILES; ++iter){
-        float bmma_ms = 0.0f;
-        cudaEvent_t bmma_start;
-        cudaEvent_t bmma_end;
-        cudaEventCreate(&bmma_start);
-        cudaEventCreate(&bmma_end);
-        cudaEventRecord(bmma_start);
-        checkKernelErrors(
-          (compute_gemm_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
-                                SHMEM_SZ>>>(A, B, C)));
-              cudaEventRecord(bmma_end);
-        cudaEventSynchronize(bmma_end);
-        cudaEventElapsedTime(&bmma_ms, bmma_start, bmma_end);
-        cudaEventDestroy(bmma_start);
-        cudaEventDestroy(bmma_end);
-        bmma_ms_avg += bmma_ms;
-  }
-
-  bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
-
-  printf("Time: %f ms\n", bmma_ms_avg);
-
-  printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * (N_GLOBAL/8) * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
-
+printf("Required shared memory size: %lu Kb\n", SHMEM_SZ / 1024UL);
 
 #ifdef verify_output
-  printf("Validating results...\n");
-  checkCudaErrors(cudaMemcpy(C_h, C, sizeof(int) * M_GLOBAL * N_GLOBAL, cudaMemcpyDeviceToHost));
-
-  int *C_ref = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
-
-  /* Copmpute reference matrix on CPU */
-  compute_ref_w1a4(A_h, B_h, C_ref);
-
-  /* validation results */
-  validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL/4);
+printf("Preparing validation data for GPU...\n");
+init_matrices(A_h, B_h);
+checkCudaErrors(cudaMemcpy(A, A_h, sizeof(int4) * M_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
+checkCudaErrors(cudaMemcpy(B, B_h, sizeof(int4) * N_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
 #endif
 
-  free(A_h);
-  free(B_h);
-  free(C_h);
-  checkCudaErrors(cudaFree(reinterpret_cast<void *>(A)));
-  checkCudaErrors(cudaFree(reinterpret_cast<void *>(B)));
-  checkCudaErrors(cudaFree(reinterpret_cast<void *>(C)));
+checkCudaErrors(cudaFuncSetAttribute(
+ compute_gemm_imma, cudaFuncAttributeMaxDynamicSharedMemorySize,
+ SHMEM_SZ));
 
-  return EXIT_SUCCESS;
+// Run ours NUM_PROFILES times and record time.
+float bmma_ms_avg = 0.0f;
+int NUM_PROFILES = 200;
+for(int iter=0; iter<NUM_PROFILES; ++iter){
+       float bmma_ms = 0.0f;
+       cudaEvent_t bmma_start;
+       cudaEvent_t bmma_end;
+       cudaEventCreate(&bmma_start);
+       cudaEventCreate(&bmma_end);
+       cudaEventRecord(bmma_start);
+       checkKernelErrors(
+         (compute_gemm_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+                               SHMEM_SZ>>>(A, B, C)));
+             cudaEventRecord(bmma_end);
+       cudaEventSynchronize(bmma_end);
+       cudaEventElapsedTime(&bmma_ms, bmma_start, bmma_end);
+       cudaEventDestroy(bmma_start);
+       cudaEventDestroy(bmma_end);
+       bmma_ms_avg += bmma_ms;
+}
+
+bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
+
+printf("Time: %f ms\n", bmma_ms_avg);
+
+printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * (N_GLOBAL/4) * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
+
+
+#ifdef verify_output
+printf("Validating results...\n");
+checkCudaErrors(cudaMemcpy(C_h, C, sizeof(int) * M_GLOBAL * N_GLOBAL, cudaMemcpyDeviceToHost));
+
+int *C_ref = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
+
+/* Copmpute reference matrix on CPU */
+compute_ref_w1a4(A_h, B_h, C_ref);
+
+/* validation results */
+validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL/4);
+#endif
+
+free(A_h);
+free(B_h);
+free(C_h);
+checkCudaErrors(cudaFree(reinterpret_cast<void *>(A)));
+checkCudaErrors(cudaFree(reinterpret_cast<void *>(B)));
+checkCudaErrors(cudaFree(reinterpret_cast<void *>(C)));
+
+return EXIT_SUCCESS;
 }

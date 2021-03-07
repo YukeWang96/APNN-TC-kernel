@@ -163,6 +163,21 @@ APNN-W1-A2. Modified from V13. Tiling Size: 64x64
 Results are validated.
 
 31:
-APNN-W1-A2. Modified from V29. Tiling Size: 64x64
+APNN-W1-A2. Modified from V29. Tiling Size: 128x128
 Results are validated.
 
+32:
+APNN-W1-A4. Modified from V31. Tiling Size: 128x128
+Results are validated.
+
+33:
+APNN-W1-A4. Modified from V30. Tiling Size: 64x64
+Results are validated.
+
+34:
+APNN-W1-A8. Tiling Size: 64x64.
+Results are not validated.
+
+35:
+APNN-W1-A8. Tiling Size: 128x128.
+Results are not validated.
