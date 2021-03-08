@@ -51,8 +51,8 @@
 #define BLOCK_ROW_WARPS 2
 #define BLOCK_COL_WARPS 4
 
-#define WARP_ROW_TILES 8
-#define WARP_COL_TILES 4
+#define WARP_ROW_TILES 4
+#define WARP_COL_TILES 2
 
 #define BLOCK_ROW_TILES (WARP_ROW_TILES * BLOCK_ROW_WARPS)
 #define BLOCK_COL_TILES (WARP_COL_TILES * BLOCK_COL_WARPS)
@@ -100,8 +100,8 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_TILES/16) * 16;
-    const unsigned int block_tile_j = block_pos % (N_TILES/16) * 16;
+    const unsigned int block_tile_i = block_pos / (N_TILES/8) * 8;
+    const unsigned int block_tile_j = block_pos % (N_TILES/8) * 8;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
     if (block_tile_i >= M_TILES) {
@@ -118,9 +118,10 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     // Select what warp copies what matrix to shared memory.
     // Warps 0-3 copy the A matrix, warps 4-7 copy the B matrix.
     const int4 *warp_ptr = (warpId < 4) ? (&A[block_tile_i * M * (K_GLOBAL/128)] +
-                                              M * (K_GLOBAL/128) * (warpId % 4) * 4)
+                                              M * (K_GLOBAL/128) * (warpId % 4) * 2)
                                            : (&B[block_tile_j * N * (K_GLOBAL/128)] +
-                                              N * (K_GLOBAL/128) * (warpId % 4) * 4);
+                                              N * (K_GLOBAL/128) * (warpId % 4) * 2);
+
 
     // Go through the global K dimension by a fixed step at a time.
 #pragma unroll
@@ -133,8 +134,8 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       // the B matrix.
       size_t shmem_idx =
           warpId < (WARPS_PER_BLOCK / 2)
-              ? (M * (warpId % (WARPS_PER_BLOCK / 2)) * 4)
-              : (N * (warpId % (WARPS_PER_BLOCK / 2)) * 4 + shmem_idx_b_off);
+              ? (M * (warpId % (WARPS_PER_BLOCK / 2)) * 2)
+              : (N * (warpId % (WARPS_PER_BLOCK / 2)) * 2 + shmem_idx_b_off);
 
       // First half of the warp copies the first row / column of the matrix,
       // the second half of the warp copies the next.
@@ -147,7 +148,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       shmem_idx += laneId / CHUNK_COPY_LINE_LANES;
 
 #pragma unroll
-      for (int i = 0; i < (32 / CHUNK_COPY_LINES_PER_WARP); i++) {
+      for (int i = 0; i < ((WARP_SIZE / 2) / CHUNK_COPY_LINES_PER_WARP); i++) {
         // Copy 16 bytes at once in each lane.
         *((int4 *)&shmem[shmem_idx][0] + (laneId % CHUNK_COPY_LINE_LANES)) =
             *lane_ptr;
@@ -168,7 +169,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
 #pragma unroll
         for (int i = 0; i < WARP_COL_TILES; i++) {
-          size_t shmem_idx_a = (warpId / 2) * M * 4 + (i * M);
+          size_t shmem_idx_a = (warpId / 2) * M * 2 + (i * M);
           const int4 *tile_ptr = &shmem[shmem_idx_a][k_step];
 
           wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
@@ -196,7 +197,7 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     
     // This pointer is used to access the C and D matrix tiles this warp computes.
     int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
-                              (warpId / 2) * SHMEM_STRIDE * M * 4 +
+                              (warpId / 2) * SHMEM_STRIDE * M * 2 +
                               (warpId % 2) * SHMEM_OFFSET; // Will be used only when writing back D. May be moved outside the for loop. TODO.
 
     // Store the D fragments to shared memory.
@@ -211,22 +212,12 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
 
     __syncthreads();
 
-    // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-    //   for(int i = 0; i < 2; i++) {
-    //     for(int j = 0; j < 2; j++) {
-    //       printf("%d ", *((int*)&shmem[0][0]+i*128+j));
-    //     }
-    //     printf("\n");
-    //   }
-    // }
-
     // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
     // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
-    size_t idx = warpId * 3 * 128 + laneId * 4;
-
+    size_t idx = threadIdx.x*4;
     int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
 
-    int val[24];
+    int val[8];
 
     typedef union {
       int4 vec;
@@ -236,12 +227,33 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     U4 tmp1;
     U4 tmp2;
 
-#pragma unroll
-    for (int i = 0; i < 5; i++) {
-      tmp0.vec = *((int4*)shmem_warp_stream_ptr);
-      tmp1.vec = *((int4*)shmem_warp_stream_ptr+32);
-      tmp2.vec = *((int4*)shmem_warp_stream_ptr+64);
+    tmp0.vec = *((int4*)shmem_warp_stream_ptr);
+    tmp1.vec = *((int4*)shmem_warp_stream_ptr+16);
+    tmp2.vec = *((int4*)shmem_warp_stream_ptr+32);
 
+    // // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+    // //   for(int i = 0; i < 4; i++) {
+    // //     printf("tmp0.a[%d], %d ", 3-i, tmp0.a[3-i]);
+    // //   }
+    // //   printf("\n");
+    // //   for(int i = 0; i < 4; i++) {
+    // //     printf("tmp1.a[%d], %d ", 3-i, tmp1.a[3-i]);
+    // //   }
+    // //   printf("\n");
+    // // }
+
+    val[0] = tmp0.a[0] + 2*tmp1.a[0] + 4*tmp2.a[0];
+    val[1] = tmp0.a[1] + 2*tmp1.a[1] + 4*tmp2.a[1];
+    val[2] = tmp0.a[2] + 2*tmp1.a[2] + 4*tmp2.a[2];
+    val[3] = tmp0.a[3] + 2*tmp1.a[3] + 4*tmp2.a[3];
+    // // printf("val0: %d, val1: %d\n", val[2*i], val[2*i+1]);
+    shmem_warp_stream_ptr += (48*64);
+
+    if (threadIdx.x < 80) {
+      tmp0.vec = *((int4*)shmem_warp_stream_ptr);
+      tmp1.vec = *((int4*)shmem_warp_stream_ptr+16);
+      tmp2.vec = *((int4*)shmem_warp_stream_ptr+32);
+  
       // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
       //   for(int i = 0; i < 4; i++) {
       //     printf("tmp0.a[%d], %d ", 3-i, tmp0.a[3-i]);
@@ -253,55 +265,31 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
       //   printf("\n");
       // }
   
-      val[4*i] = tmp0.a[0] + 2*tmp1.a[0] + 4*tmp2.a[0];
-      val[4*i+1] = tmp0.a[1] + 2*tmp1.a[1] + 4*tmp2.a[1];
-      val[4*i+2] = tmp0.a[2] + 2*tmp1.a[2] + 4*tmp2.a[2];
-      val[4*i+3] = tmp0.a[3] + 2*tmp1.a[3] + 4*tmp2.a[3];
-
-      shmem_warp_stream_ptr += 24*128;
+      val[4] = tmp0.a[0] + 2*tmp1.a[0] + 4*tmp2.a[0];
+      val[5] = tmp0.a[1] + 2*tmp1.a[1] + 4*tmp2.a[1];
+      val[6] = tmp0.a[2] + 2*tmp1.a[2] + 4*tmp2.a[2];
+      val[7] = tmp0.a[3] + 2*tmp1.a[3] + 4*tmp2.a[3];
     }
-
-    if (warpId<2) {
-      tmp0.vec = *((int4*)shmem_warp_stream_ptr);
-      tmp1.vec = *((int4*)shmem_warp_stream_ptr+32);
-      tmp2.vec = *((int4*)shmem_warp_stream_ptr+64);
-
-      // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-      //   for(int i = 0; i < 4; i++) {
-      //     printf("tmp0.a[%d], %d ", 3-i, tmp0.a[3-i]);
-      //   }
-      //   printf("\n");
-      //   for(int i = 0; i < 4; i++) {
-      //     printf("tmp1.a[%d], %d ", 3-i, tmp1.a[3-i]);
-      //   }
-      //   printf("\n");
-      // }
-  
-      val[20] = tmp0.a[0] + 2*tmp1.a[0] + 4*tmp2.a[0];
-      val[21] = tmp0.a[1] + 2*tmp1.a[1] + 4*tmp2.a[1];
-      val[22] = tmp0.a[2] + 2*tmp1.a[2] + 4*tmp2.a[2];
-      val[23] = tmp0.a[3] + 2*tmp1.a[3] + 4*tmp2.a[3];
-    }
-
 
     __syncthreads();
 
-    idx = warpId * 128 + laneId*4;
-    shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
-#pragma unroll
-    for(int i = 0; i < 5; i++) {
-      *(shmem_warp_stream_ptr+0) = val[4*i+0];
-      *(shmem_warp_stream_ptr+1) = val[4*i+1];
-      *(shmem_warp_stream_ptr+2) = val[4*i+2];
-      *(shmem_warp_stream_ptr+3) = val[4*i+3];
-      shmem_warp_stream_ptr += 8*128;
+    shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x*4;
+
+    // #pragma unroll
+    tmp0.a[0] = val[0];
+    tmp0.a[1] = val[1];
+    tmp0.a[2] = val[2];
+    tmp0.a[3] = val[3];
+    *(int4*)shmem_warp_stream_ptr = tmp0.vec;
+
+    if (threadIdx.x < 80) {
+      shmem_warp_stream_ptr += 16*64;
+      *shmem_warp_stream_ptr = val[4];
+      *(shmem_warp_stream_ptr+1) = val[5];
+      *(shmem_warp_stream_ptr+2) = val[6];
+      *(shmem_warp_stream_ptr+3) = val[7];
     }
-    if(warpId<2) {
-      *(shmem_warp_stream_ptr+0) = val[20];
-      *(shmem_warp_stream_ptr+1) = val[21];
-      *(shmem_warp_stream_ptr+2) = val[22];
-      *(shmem_warp_stream_ptr+3) = val[23];
-    }
+
     __syncthreads();
 
     // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
@@ -313,24 +301,23 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
     //   }
     // }
 
-    shmem_warp_stream_ptr = (int*)&shmem[0][0]+ threadIdx.x*4;
+    shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x*4;
 
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    size_t gmem_idx = block_tile_i*M/3*N_GLOBAL + block_tile_j*N + warpId*N_GLOBAL + laneId*4;
+    size_t gmem_idx = block_tile_i*(M/3)*N_GLOBAL + block_tile_j*N + (threadIdx.x/16)*N_GLOBAL + (threadIdx.x%16)*4;
     
     // Now that shared memory contains all the D tiles, stream them to global memory.
     int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
+    
+    *((int4 *)(dst_gmem_warp_stream_ptr)) = *((int4 *)(shmem_warp_stream_ptr));
 
-#pragma unroll
-    for (int i = 0; i < 5; i++) {
-      *((int4 *)(dst_gmem_warp_stream_ptr + i*8*N_GLOBAL)) =
-      *((int4 *)(shmem_warp_stream_ptr + i*8*128));
+    if (threadIdx.x < 80) {
+      shmem_warp_stream_ptr += 16*64;
+      dst_gmem_warp_stream_ptr += 16*N_GLOBAL;
+      *((int4 *)(dst_gmem_warp_stream_ptr)) = *((int4 *)(shmem_warp_stream_ptr));  
     }
-    if(warpId<2) {
-      *((int4 *)(dst_gmem_warp_stream_ptr + 5*8*N_GLOBAL)) =
-      *((int4 *)(shmem_warp_stream_ptr + 5*8*128));
-    }
+
     __syncthreads();
   }
 }
