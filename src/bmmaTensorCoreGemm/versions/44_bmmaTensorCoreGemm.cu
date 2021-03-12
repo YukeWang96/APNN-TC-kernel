@@ -15,7 +15,7 @@
 #include <helper_functions.h>
 
 #define CHUNK_K 4
-#define SKEW 1 
+#define SKEW 1
 #define WARPS_PER_BLOCK 8
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK WARP_SIZE * WARPS_PER_BLOCK
@@ -69,21 +69,25 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       break;
     }
 
-    int image_starting_idx = block_i * Width * CIN/128 + block_j * CIN/128;
+    int image_starting_idx = block_i * 4 * Width * CIN/32 + block_j * 8 * CIN/32;
 
     wmma::fragment<wmma::accumulator, 8, 8, 128, int> c[WARP_COL_TILES]
                                                      [WARP_ROW_TILES];
 
     for(int i=0; i < WARP_COL_TILES; i++)
-      for(int j = 0; j < WARP_ROW_TILES; j++)
+      for(int j=0; j < WARP_ROW_TILES; j++)
         wmma::fill_fragment(c[i][j], 0);
     
-    if (threadIdx.x < 120) {
-      int threadPart = threadIdx.x/60;
-      int threadOffset = threadIdx.x%60;
-      int GL_idx = threadPart * X_bit_offset + (threadOffset/10)*Width + threadOffset%10 + image_starting_idx;
-      *(&shmem[128][0]+threadIdx.x) = X[GL_idx];
+    int GL_idx;
+    if (threadIdx.x < 240) {
+      GL_idx = image_starting_idx + (threadIdx.x/40)*Width*CIN/32 + threadIdx.x%40;
+      *((int*)&shmem[128][0]+threadIdx.x) = *((int*)X+GL_idx);  
     }
+    if (threadIdx.x < 240) {
+      GL_idx = image_starting_idx + (threadIdx.x/40)*Width*CIN/32 + threadIdx.x%40 + X_bit_offset;
+      *((int*)&shmem[128][0]+threadIdx.x+240) = *((int*)X+GL_idx);  
+    }
+
     __syncthreads();
 
     // Go through the global K dimension by a fixed step at a time.
@@ -140,7 +144,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       __syncthreads();
     }
 
-    // Needs special handle for the remaining K.
+//     // Needs special handle for the remaining K.
 
     // Store the D fragments to shared memory.
 #pragma unroll

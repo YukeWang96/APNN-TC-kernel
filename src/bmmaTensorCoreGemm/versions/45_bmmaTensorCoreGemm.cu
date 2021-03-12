@@ -15,7 +15,7 @@
 #include <helper_functions.h>
 
 #define CHUNK_K 4
-#define SKEW 1 
+#define SKEW 1
 #define WARPS_PER_BLOCK 8
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK WARP_SIZE * WARPS_PER_BLOCK
@@ -69,35 +69,28 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       break;
     }
 
-    int image_starting_idx = block_i * Width * CIN/128 + block_j * CIN/128;
+    int image_starting_idx = block_i * 4 * Width * CIN/128 + block_j * 8 * CIN/128;
 
     wmma::fragment<wmma::accumulator, 8, 8, 128, int> c[WARP_COL_TILES]
                                                      [WARP_ROW_TILES];
 
     for(int i=0; i < WARP_COL_TILES; i++)
-      for(int j = 0; j < WARP_ROW_TILES; j++)
+      for(int j=0; j < WARP_ROW_TILES; j++)
         wmma::fill_fragment(c[i][j], 0);
     
-    if (threadIdx.x < 120) {
-      int threadPart = threadIdx.x/60;
-      int threadOffset = threadIdx.x%60;
-      int GL_idx = threadPart * X_bit_offset + (threadOffset/10)*Width + threadOffset%10 + image_starting_idx;
-      *(&shmem[128][0]+threadIdx.x) = X[GL_idx];
-    }
-    __syncthreads();
-
     // Go through the global K dimension by a fixed step at a time.
 #pragma unroll
     for (int tile_k = 0; tile_k < int(9*CIN/128/4); tile_k += CHUNK_K) {
-
       int SHMEM_i = threadIdx.x/4;
       int SHMEM_part = SHMEM_i / 32;
       int SHMEM_offset = SHMEM_i % 32;
-      int feature_expand_idx = SHMEM_part * 15 * CIN/2 + (SHMEM_offset/8)*10*CIN/128 + (SHMEM_offset%8)*CIN/128;
-
+      int row = SHMEM_offset / 8;
+      int col = SHMEM_offset % 8;
       int t = threadIdx.x % 4;
-      int thread_expand_idx = feature_expand_idx + (tile_k*4+t)/(3*CIN/128)*10*(CIN/128) + (tile_k*4+t)%(3*CIN/128);
-      shmem[SHMEM_i][t] = *(&shmem[128][0]+thread_expand_idx);
+
+      int GL_idx = image_starting_idx + SHMEM_part*X_bit_offset + row*Width*CIN/128 + col*CIN/18 + tile_k*4 + t;
+
+      shmem[SHMEM_i][t] = X[GL_idx];
 
       SHMEM_i += 64;
       int weight_load_idx = SHMEM_part * 9 * CIN * COUT / 128 + (block_z + SHMEM_offset) * 9 * CIN/128;
@@ -140,7 +133,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       __syncthreads();
     }
 
-    // Needs special handle for the remaining K.
+//     // Needs special handle for the remaining K.
 
     // Store the D fragments to shared memory.
 #pragma unroll

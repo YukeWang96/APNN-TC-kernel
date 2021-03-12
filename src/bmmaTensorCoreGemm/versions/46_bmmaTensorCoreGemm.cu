@@ -15,7 +15,7 @@
 #include <helper_functions.h>
 
 #define CHUNK_K 4
-#define SKEW 1 
+#define SKEW 1
 #define WARPS_PER_BLOCK 8
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK WARP_SIZE * WARPS_PER_BLOCK
@@ -48,6 +48,12 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma::experimental;
 
+typedef union {
+  int4 vec;
+  int a[4];
+} U4;
+
+
 // Assume that Kernel size is 3x3.
 // Assume CIN is 128.
 __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
@@ -69,21 +75,25 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       break;
     }
 
-    int image_starting_idx = block_i * Width * CIN/128 + block_j * CIN/128;
+    int image_starting_idx = block_i * 4 * Width * CIN/32 + block_j * 8 * CIN/32;
 
     wmma::fragment<wmma::accumulator, 8, 8, 128, int> c[WARP_COL_TILES]
                                                      [WARP_ROW_TILES];
 
     for(int i=0; i < WARP_COL_TILES; i++)
-      for(int j = 0; j < WARP_ROW_TILES; j++)
+      for(int j=0; j < WARP_ROW_TILES; j++)
         wmma::fill_fragment(c[i][j], 0);
     
-    if (threadIdx.x < 120) {
-      int threadPart = threadIdx.x/60;
-      int threadOffset = threadIdx.x%60;
-      int GL_idx = threadPart * X_bit_offset + (threadOffset/10)*Width + threadOffset%10 + image_starting_idx;
-      *(&shmem[128][0]+threadIdx.x) = X[GL_idx];
+    int GL_idx;
+    if (threadIdx.x < 240) {
+      GL_idx = image_starting_idx + (threadIdx.x/40)*Width*CIN/32 + threadIdx.x%40;
+      *((int*)&shmem[128][0]+threadIdx.x) = *((int*)X+GL_idx);  
     }
+    if (threadIdx.x < 240) {
+      GL_idx = image_starting_idx + (threadIdx.x/40)*Width*CIN/32 + threadIdx.x%40 + X_bit_offset;
+      *((int*)&shmem[128][0]+threadIdx.x+240) = *((int*)X+GL_idx);  
+    }
+
     __syncthreads();
 
     // Go through the global K dimension by a fixed step at a time.
@@ -140,7 +150,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       __syncthreads();
     }
 
-    // Needs special handle for the remaining K.
+//     // Needs special handle for the remaining K.
 
     // Store the D fragments to shared memory.
 #pragma unroll
@@ -154,30 +164,30 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
     __syncthreads();
 
-    if (threadIdx.x < 32) {
-      int num1 = 0;
-      int num2 = 0;
-      for (int j = 0; j < 32; j++) {
-        int tile_i = threadIdx.x%16/8;
-        int element_i = (threadIdx.x%16)%8;  
-        int tile_j = j%32/8;
-        int element_j = (j%32)%8;
-        int final_i = warpId * 8 + tile_i*4+tile_j;
-        int final_j = element_i *8 + element_j;
-        int v0 = *((int*)&shmem[0][0]+final_i*64+final_j);
-        int v1 = *((int*)&shmem[0][0]+final_i*64+final_j+32);
-        int v2 = *((int*)&shmem[0][0]+(final_i+32)*64+final_j);
-        int v3 = *((int*)&shmem[0][0]+(final_i+32)*64+final_j+32);
-        int tmp = v0 + 2*v1 + 2*v2 + 4*v3;
-        int tmp1 = tmp&1;
-        int tmp2 = tmp&2;
-        num1 = (num1 << 1) | tmp1;
-        num2 = (num2 << 1) | tmp2;
-      }
-      *(Output+(threadIdx.x/8)*Width + threadIdx.x%8) = num1;
-      *(Output+(threadIdx.x/8)*Width + threadIdx.x%8+ Height*Width*COUT/32) = num2;
-    }
 
+
+    U4 tmp0;
+    U4 tmp1;
+    U4 tmp2;
+    U4 tmp3;
+    U4 val;
+
+    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x/8*64 + (threadIdx.x%8)*4;
+    tmp0.vec = *((int4*)shmem_warp_stream_ptr);
+    tmp1.vec = *((int4*)shmem_warp_stream_ptr+8);
+    tmp2.vec = *((int4*)shmem_warp_stream_ptr+32*16);
+    tmp3.vec = *((int4*)shmem_warp_stream_ptr+32*16+8);
+    val.a[0] = tmp0.a[0] + 2*tmp1.a[0] + 2*tmp2.a[0] + 4*tmp3.a[0];
+    val.a[1] = tmp0.a[1] + 2*tmp1.a[1] + 2*tmp2.a[1] + 4*tmp3.a[1];
+    val.a[2] = tmp0.a[2] + 2*tmp1.a[2] + 2*tmp2.a[2] + 4*tmp3.a[2];
+    val.a[3] = tmp0.a[3] + 2*tmp1.a[3] + 2*tmp2.a[3] + 4*tmp3.a[3];
+
+    int shmem_row = threadIdx.x/8;
+    int row = shmem_row / 8;
+    int col = shmem_row % 8;
+    int* dst_gmem_warp_stream_ptr = Output + block_i * 4 * Width * COUT + block_j*8*COUT 
+              + row*Width*COUT + col*4;
+    *(int4*)dst_gmem_warp_stream_ptr = val.vec;
     __syncthreads();
   }
 }
@@ -269,7 +279,7 @@ int main(int argc, char **argv) {
 
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&X), sizeof(int4) * Height * Width * (CIN/128) * bit));
   checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&W), sizeof(int4) * 9 * (CIN/128) * COUT * bit));
-  checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&Output), sizeof(int4) * Height * Width * (COUT/128) * bit));
+  checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&Output), sizeof(int4) * Height * Width * COUT ));
 
 // #ifdef verify_output
 //   printf("Preparing validation data for GPU...\n");
