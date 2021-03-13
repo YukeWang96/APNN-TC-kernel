@@ -231,7 +231,10 @@ Conv-w2-a2. Combine 45 & 46.
 0.0141 ms. 比cutlass-int4快1.17x.
 
 48:
-Conv-w2-a2. Tiling size改成128x128.
+Conv-w2-a2. Complete computation. Passed cuda-memcheck with 0 error.
+
+Has conv reference code on cpu.
+Result is not validated yet.
 
 
 
