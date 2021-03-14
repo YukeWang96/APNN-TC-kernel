@@ -284,13 +284,13 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     val.a[2] = tmp0.a[2] + 2*tmp1.a[2] + 2*tmp2.a[2] + 4*tmp3.a[2];
     val.a[3] = tmp0.a[3] + 2*tmp1.a[3] + 2*tmp2.a[3] + 4*tmp3.a[3];
 
-    if (block_pos == 0 && warpId == 0 && laneId == 0) {
-      printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
-      printf("tmp1: %d %d %d %d\n", tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3]);
-      printf("tmp2: %d %d %d %d\n", tmp2.a[0], tmp2.a[1], tmp2.a[2], tmp2.a[3]);
-      printf("tmp3: %d %d %d %d\n", tmp3.a[0], tmp3.a[1], tmp3.a[2], tmp3.a[3]);
-      printf("val: %d %d %d %d \n", val.a[0], val.a[1], val.a[2], val.a[3]);
-    }
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+    //   printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
+    //   printf("tmp1: %d %d %d %d\n", tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3]);
+    //   printf("tmp2: %d %d %d %d\n", tmp2.a[0], tmp2.a[1], tmp2.a[2], tmp2.a[3]);
+    //   printf("tmp3: %d %d %d %d\n", tmp3.a[0], tmp3.a[1], tmp3.a[2], tmp3.a[3]);
+    //   printf("val: %d %d %d %d \n", val.a[0], val.a[1], val.a[2], val.a[3]);
+    // }
 
     int SHMEM_row = threadIdx.x/8;
     int SHMEM_col = threadIdx.x%8;
@@ -320,8 +320,8 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
       for(int j=0; j < Width+2; j++) {
         for(int k = 0; k < CIN/32; k++) {
           // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
-          X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = i;
-          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = rand();
+          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = i;
+          X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = rand();
         }      
       }
     }  
@@ -330,8 +330,8 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < COUT; i++) {
       for(int j = 0; j < 9*CIN/32; j++) {
-        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
-        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
+        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
       }
     }
   }
@@ -376,7 +376,7 @@ void compute_ref(int4 *X, int4 *W, int *ref_C, int Height, int Width, int CIN, i
             for(int j=0; j<3; j++) {
               for(int k_tile=0; k_tile<CIN/32; k_tile++) {
                   int x_int = X_int[xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile];
-                  int w_int = W_int[wb*COUT*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
+                  int w_int = W_int[wb*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
                   for(int k=0; k<32; k++) {
                     int mask = 1;
                     int x_val = ((mask << k) & x_int) >> k;
@@ -419,7 +419,7 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
-#define verify_output
+// #define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");
@@ -429,14 +429,14 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 16;
-  int Width = 16;
+  int Height = 32;
+  int Width = 32;
   int X_BIT = 2;
   int W_BIT = 2;
 
   // for(int CIN = 128; CIN <= 2048; CIN+=128) {
     int CIN=128;
-    int COUT = 64;
+    int COUT = 128;
     int4 *X = NULL;
     int4 *W = NULL;
     int *Output = NULL;

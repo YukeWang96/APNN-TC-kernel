@@ -233,7 +233,6 @@ Conv-w2-a2. Combine 45 & 46.
 48:
 Conv-w2-a2. Complete computation. Passed cuda-memcheck with 0 error.
 
-Has conv reference code on cpu.
 Result is not validated yet.
 
 
