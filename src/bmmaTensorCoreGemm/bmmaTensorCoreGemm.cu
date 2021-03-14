@@ -14,8 +14,8 @@
 #include <helper_cuda.h>
 #include <helper_functions.h>
 
-#define CHUNK_K 8
-#define SKEW 2
+#define CHUNK_K 4
+#define SKEW 1
 #define WARPS_PER_BLOCK 8
 #define WARP_SIZE 32
 #define THREADS_PER_BLOCK WARP_SIZE * WARPS_PER_BLOCK
@@ -53,7 +53,6 @@ typedef union {
   int a[4];
 } U4;
 
-
 // Assume that Kernel size is 3x3.
 // Assume CIN is 128.
 __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
@@ -63,6 +62,15 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
   int BIT = 2;
   int X_ROW_BIT = Width*CIN/128;
   int W_ROW_BIT = 9*(CIN/128);
+
+  // if (blockIdx.x == 0 && threadIdx.x == 0) {
+  //   // for(int i = 0; i<Height*Width*CIN/32*BIT; i++) {
+  //   //   printf("X[%d]: %x\n", i, *((int*)X+i));
+  //   // }  
+  //   for(int i = 0; i<COUT*9*CIN/32; i++) {
+  //     printf("W[%d]: %x\n", i, *((int*)W+i));
+  //   }  
+  // }
 
   extern __shared__ int4 shmem[][CHUNK_K+SKEW]; // TODO: Padding opportunity may exist here.
   wmma::fragment<wmma::accumulator, 8, 8, 128, int> c[WARP_COL_TILES]
@@ -76,9 +84,9 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_i = (block_pos/(COUT/64)) / (Width/8) * 4;
-    const unsigned int block_j = (block_pos/(COUT/64)) % (Width/8) * 8;
-    const unsigned int block_z = block_pos % (COUT/64) * 64;
+    const unsigned int block_i = (block_pos/(COUT/32)) / (Width/8) * 4;
+    const unsigned int block_j = (block_pos/(COUT/32)) % (Width/8) * 8;
+    const unsigned int block_z = block_pos % (COUT/32) * 32;
 
     if (block_i >= Height) {
       break;
@@ -94,7 +102,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     // This for loop computes [0,1,2,...,int(9*CIN/128/CHUNK_K)*CHUNK_K-1]. Next for loop computes [int(9*CIN/128/CHUNK_K)*CHUNK_K, ..., 9*CIN/128-1]
     // Go through the global K dimension by a fixed step at a time.
 #pragma unroll
-    for (int tile_k = 0; tile_k < 9*CIN/128; tile_k += CHUNK_K) {
+    for (int tile_k = 0; tile_k+CHUNK_K < 9*CIN/128; tile_k += CHUNK_K) {
 
       int SHMEM_i = threadIdx.x/4;
       int bit_flag = SHMEM_i / (64/BIT); // bit_flag = 0/1, indicates 
@@ -103,7 +111,17 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       int col = SHMEM_offset % 8;
       int t = threadIdx.x % 4;
 
-      int GL_idx = image_starting_idx + bit_flag*X_bit_offset + row*X_ROW_BIT + col*CIN/128 + tile_k + t;
+      int sub_row = (tile_k+t)/(3*CIN/128);
+      int sub_col = (tile_k+t)%(3*CIN/128);
+
+
+      int GL_idx = image_starting_idx + bit_flag*X_bit_offset + row*X_ROW_BIT + col*CIN/128 + sub_row*X_ROW_BIT + sub_col;
+
+      // if (block_pos == 0 && tile_k ==0 && SHMEM_i == 1) {
+      //   printf("tile_k: %d, block_i: %d, block_j: %d, row: %d, col: %d, sub_row: %d, sub_col: %d, GL_idx: %d\n", tile_k, block_i, block_j, row, col, sub_row, sub_col, GL_idx);
+      //   printf("X[17]: %x %x %x %x\n", *((int*)X+ 4*17), *((int*)X+ 4*17+1), *((int*)X+ 4*17+2), *((int*)X+ 4*17+3));
+      // }
+  
 
       shmem[SHMEM_i][t] = X[GL_idx];
 
@@ -112,6 +130,17 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       shmem[SHMEM_i][t] = W[weight_load_idx];
 
       __syncthreads();
+
+      // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
+      //   for(int i = 64; i < 128; i++) {
+      //     for(int j = 0; j < 16; j++) {
+      //       int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //       printf("tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
+      //     }
+      //   }
+      // }
+  
+
 
       // Compute a grid of C matrix tiles in each warp.
 #pragma unroll
@@ -123,6 +152,12 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
           const int4 *tile_ptr = &shmem[shmem_idx_a][k_step];
 
           wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
+          
+        // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
+        //   for(int t = 0; t<a[i].num_elements; t++) {
+        //       printf("a[%d].x[%d]: %x\n", i, t, a[i].x[t]);
+        //   }
+        // }
 
 #pragma unroll
           for (int j = 0; j < WARP_ROW_TILES; j++) {
@@ -138,7 +173,17 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
             }
             // printf("ckpt4\n");
 
-            wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j]);
+        // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
+        //   for(int t = 0; t<b[j].num_elements; t++) {
+        //       printf("b[%d].x[%d]: %x\n", j, t, b[j].x[t]);
+        //   }
+        // }
+        wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j], bmmaBitOpAND);
+        // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
+        //   for(int t = 0; t<c[i][j].num_elements; t++) {
+        //       printf("c[%d][%d].x[%d]: %x\n", i, j, t, c[i][j].x[t]);
+        //   }
+        // }
           }
         }
       }
@@ -186,23 +231,38 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
           }
           // printf("ckpt4\n");
 
-          wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j]);
+          wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j], bmmaBitOpAND);
         }
       }
       __syncthreads();
     }
+
+    // This pointer is used to access the C and D matrix tiles this warp computes.
+    int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
+                              (warpId / 2) * 64 * 8 * 2 +
+                              (warpId % 2) * 32; // Will be used only when writing back D. May be moved outside the for loop. TODO.
 
     // Store the D fragments to shared memory.
 #pragma unroll
     for (int i = 0; i < WARP_COL_TILES; i++) {
 #pragma unroll
       for (int j = 0; j < WARP_ROW_TILES; j++) {
-        int *tile_ptr = (int*)&shmem[0][0] + warpId*8*64 + (i*4+j) * 64;
-        wmma::store_matrix_sync(tile_ptr, c[i][j], 8,  wmma::mem_row_major);
+        int *tile_ptr = shmem_warp_tile_ptr + i*64*8 + j*8;
+        wmma::store_matrix_sync(tile_ptr, c[i][j], 64,  wmma::mem_row_major);
       }
     }
 
     __syncthreads();
+
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+    //   for(int i = 0; i < 64; i++) {
+    //     for(int j = 0; j < 64; j++) {
+    //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
+    //       printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
+    //     }
+    //   }
+    // }
+
 
     U4 tmp0;
     U4 tmp1;
@@ -220,11 +280,29 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     val.a[2] = tmp0.a[2] + 2*tmp1.a[2] + 2*tmp2.a[2] + 4*tmp3.a[2];
     val.a[3] = tmp0.a[3] + 2*tmp1.a[3] + 2*tmp2.a[3] + 4*tmp3.a[3];
 
-    int shmem_row = threadIdx.x/8;
-    int row = shmem_row / 8;
-    int col = shmem_row % 8;
-    int* dst_gmem_warp_stream_ptr = Output + block_i * 4 * Width * COUT + block_j*8*COUT 
-              + row*Width*COUT + col*4;
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+    //   printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
+    //   printf("tmp1: %d %d %d %d\n", tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3]);
+    //   printf("tmp2: %d %d %d %d\n", tmp2.a[0], tmp2.a[1], tmp2.a[2], tmp2.a[3]);
+    //   printf("tmp3: %d %d %d %d\n", tmp3.a[0], tmp3.a[1], tmp3.a[2], tmp3.a[3]);
+    //   printf("val: %d %d %d %d \n", val.a[0], val.a[1], val.a[2], val.a[3]);
+    // }
+
+    int SHMEM_row = threadIdx.x/8;
+    int SHMEM_col = threadIdx.x%8;
+    int Output_row = SHMEM_row/8;
+    int Output_col = SHMEM_row % 8;
+
+    int* dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT + block_j*COUT + block_z 
+              + Output_row*Width*COUT + Output_col*COUT
+              + SHMEM_col*4;
+    // if (block_pos == 0) {
+    //   printf("block_i: %d, block_j: %d, block_z: %d, threadIdx.x: %d, Output_row: %d, Output_col: %d, idx: %d\n", block_i, block_j, block_z, 
+    //     threadIdx.x, Output_row, Output_col, 
+    //     block_i * Width * COUT + block_j*COUT + block_z 
+    //     + Output_row*Width*COUT + Output_col*COUT
+    //     + SHMEM_col*4);
+    // }
     *(int4*)dst_gmem_warp_stream_ptr = val.vec;
     __syncthreads();
   }
@@ -234,9 +312,10 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
   int *X_int = (int*) X;
   int *W_int = (int*) W;
   for(int b = 0; b<X_BIT; b++) {
-    for(int i = 0; i < Height; i++) {
-      for(int j=0; j < Width; j++) {
+    for(int i=0; i < Height+2; i++) {
+      for(int j=0; j < Width+2; j++) {
         for(int k = 0; k < 9*CIN/32; k++) {
+          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
           X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = rand();
         }      
       }
@@ -246,7 +325,7 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < COUT; i++) {
       for(int j = 0; j < 9*CIN/32; j++) {
-        // W_int[i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
         W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
       }
     }
@@ -352,12 +431,12 @@ int main(int argc, char **argv) {
 
   // for(int CIN = 128; CIN <= 2048; CIN+=128) {
     int CIN=128;
-    int COUT = CIN;
+    int COUT = 64;
     int4 *X = NULL;
     int4 *W = NULL;
     int *Output = NULL;
   
-    checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&X), sizeof(int4) * Height * Width * (CIN/128) * X_BIT));
+    checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&X), sizeof(int4) * (Height+2) * (Width+2) * (CIN/128) * X_BIT));
     checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&W), sizeof(int4) * 9 * (CIN/128) * COUT * W_BIT));
     checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&Output), sizeof(int4) * Height * Width * COUT ));
   
@@ -369,9 +448,9 @@ int main(int argc, char **argv) {
   
   X_h = (int4 *)malloc(sizeof(int4) * Height * Width * (CIN/128) * X_BIT);
   W_h = (int4 *)malloc(sizeof(int4) * 9 * (CIN/128) * COUT * W_BIT);
-  Output_h = (int *)malloc(sizeof(int) * Height * Width * COUT);
+  Output_h = (int *)malloc(sizeof(int) * (Height+2) * (Width+2) * COUT);
   init_matrices(X_h, W_h, Height, Width, CIN, COUT, X_BIT, W_BIT);
-  checkCudaErrors(cudaMemcpy(X, X_h, sizeof(int4) * Height * Width * (CIN/128) * X_BIT, cudaMemcpyHostToDevice));
+  checkCudaErrors(cudaMemcpy(X, X_h, sizeof(int4) * (Height+2) * (Width+2) * (CIN/128) * X_BIT, cudaMemcpyHostToDevice));
   checkCudaErrors(cudaMemcpy(W, W_h, sizeof(int4) * 9 * (CIN/128) * COUT * W_BIT, cudaMemcpyHostToDevice));
 #endif
   
@@ -382,7 +461,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1000;
+    int NUM_PROFILES = 1;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -393,7 +472,7 @@ int main(int argc, char **argv) {
             checkKernelErrors(
               (compute_conv_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
                                     SHMEM_SZ>>>(W, X, Output, Height, Width, CIN, COUT)));
-                  cudaEventRecord(bmma_end);
+            cudaEventRecord(bmma_end);
             cudaEventSynchronize(bmma_end);
             cudaEventElapsedTime(&bmma_ms, bmma_start, bmma_end);
             cudaEventDestroy(bmma_start);
