@@ -131,8 +131,8 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
       __syncthreads();
 
-      // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
-      //   for(int i = 64; i < 128; i++) {
+      // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+      //   for(int i = 64; i < 65; i++) {
       //     for(int j = 0; j < 16; j++) {
       //       int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
       //       printf("tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
@@ -148,14 +148,15 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
 #pragma unroll
         for (int i = 0; i < WARP_COL_TILES; i++) {
-          size_t shmem_idx_a = (warpId / 2) * M * 4 + (i * M);
+          size_t shmem_idx_a = (warpId / 2) * M * 2 + (i * M);
           const int4 *tile_ptr = &shmem[shmem_idx_a][k_step];
 
           wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
           
-        // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
+        // if (block_pos == 0 && warpId == 4 && laneId == 0) {
+        //   printf("tile_k: %d, k_step: %d, shmem_idx_a: %d\n", tile_k, k_step, shmem_idx_a);
         //   for(int t = 0; t<a[i].num_elements; t++) {
-        //       printf("a[%d].x[%d]: %x\n", i, t, a[i].x[t]);
+        //       printf("tile_k: %d, k_step: %d, a[%d].x[%d]: %x\n", tile_k, k_step, i, t, a[i].x[t]);
         //   }
         // }
 
@@ -173,22 +174,18 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
             }
             // printf("ckpt4\n");
 
-        // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
-        //   for(int t = 0; t<b[j].num_elements; t++) {
-        //       printf("b[%d].x[%d]: %x\n", j, t, b[j].x[t]);
-        //   }
-        // }
-        wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j], bmmaBitOpAND);
-        // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
-        //   for(int t = 0; t<c[i][j].num_elements; t++) {
-        //       printf("c[%d][%d].x[%d]: %x\n", i, j, t, c[i][j].x[t]);
-        //   }
-        // }
+            // if (block_pos == 0 && warpId == 0 && laneId == 0 && tile_k == 0) {
+            //   for(int t = 0; t<b[j].num_elements; t++) {
+            //       printf("b[%d].x[%d]: %x\n", j, t, b[j].x[t]);
+            //   }
+            // }
+            wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j], bmmaBitOpAND);
           }
         }
       }
       __syncthreads();
     }
+
 
 #pragma unroll
     for (int tile_k = int(9*CIN/128/CHUNK_K)*CHUNK_K; tile_k < 9*CIN/128; tile_k++) {
@@ -199,7 +196,10 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       int col = SHMEM_offset % 8;
       int t = threadIdx.x % 4;
 
-      int GL_idx = image_starting_idx + bit_flag*X_bit_offset + row*X_ROW_BIT + col*CIN/128 + tile_k;
+      int sub_row = (tile_k)/(3*CIN/128);
+      int sub_col = (tile_k)%(3*CIN/128);
+
+      int GL_idx = image_starting_idx + bit_flag*X_bit_offset + row*X_ROW_BIT + col*CIN/128 + sub_row*X_ROW_BIT + sub_col;
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&X[GL_idx] + t);
 
       SHMEM_i += 64;
@@ -212,7 +212,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
 #pragma unroll
       for (int i = 0; i < WARP_COL_TILES; i++) {
-        size_t shmem_idx_a = (warpId / 2) * M * 4 + (i * M);
+        size_t shmem_idx_a = (warpId / 2) * M * 2 + (i * M);
         const int4 *tile_ptr = &shmem[shmem_idx_a][0];
 
         wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
@@ -236,7 +236,11 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       }
       __syncthreads();
     }
-
+    // if (block_pos == 0 && warpId == 4 && laneId == 0) {
+    //   for(int t = 0; t<c[0][0].num_elements; t++) {
+    //       printf("c[0][0].x[%d]: %d\n", t, c[0][0].x[t]);
+    //   }
+    // }
     // This pointer is used to access the C and D matrix tiles this warp computes.
     int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
                               (warpId / 2) * 64 * 8 * 2 +
@@ -255,7 +259,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     __syncthreads();
 
     // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-    //   for(int i = 0; i < 64; i++) {
+    //   for(int i = 31; i < 34; i++) {
     //     for(int j = 0; j < 64; j++) {
     //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
     //       printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
@@ -280,18 +284,18 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     val.a[2] = tmp0.a[2] + 2*tmp1.a[2] + 2*tmp2.a[2] + 4*tmp3.a[2];
     val.a[3] = tmp0.a[3] + 2*tmp1.a[3] + 2*tmp2.a[3] + 4*tmp3.a[3];
 
-    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-    //   printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
-    //   printf("tmp1: %d %d %d %d\n", tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3]);
-    //   printf("tmp2: %d %d %d %d\n", tmp2.a[0], tmp2.a[1], tmp2.a[2], tmp2.a[3]);
-    //   printf("tmp3: %d %d %d %d\n", tmp3.a[0], tmp3.a[1], tmp3.a[2], tmp3.a[3]);
-    //   printf("val: %d %d %d %d \n", val.a[0], val.a[1], val.a[2], val.a[3]);
-    // }
+    if (block_pos == 0 && warpId == 0 && laneId == 0) {
+      printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
+      printf("tmp1: %d %d %d %d\n", tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3]);
+      printf("tmp2: %d %d %d %d\n", tmp2.a[0], tmp2.a[1], tmp2.a[2], tmp2.a[3]);
+      printf("tmp3: %d %d %d %d\n", tmp3.a[0], tmp3.a[1], tmp3.a[2], tmp3.a[3]);
+      printf("val: %d %d %d %d \n", val.a[0], val.a[1], val.a[2], val.a[3]);
+    }
 
     int SHMEM_row = threadIdx.x/8;
     int SHMEM_col = threadIdx.x%8;
     int Output_row = SHMEM_row/8;
-    int Output_col = SHMEM_row % 8;
+    int Output_col = SHMEM_row%8;
 
     int* dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT + block_j*COUT + block_z 
               + Output_row*Width*COUT + Output_col*COUT
@@ -314,9 +318,10 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
   for(int b = 0; b<X_BIT; b++) {
     for(int i=0; i < Height+2; i++) {
       for(int j=0; j < Width+2; j++) {
-        for(int k = 0; k < 9*CIN/32; k++) {
+        for(int k = 0; k < CIN/32; k++) {
           // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
-          X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = rand();
+          X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = i;
+          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = rand();
         }      
       }
     }  
@@ -325,8 +330,8 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < COUT; i++) {
       for(int j = 0; j < 9*CIN/32; j++) {
-        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
-        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
+        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
       }
     }
   }
@@ -391,7 +396,7 @@ void compute_ref(int4 *X, int4 *W, int *ref_C, int Height, int Width, int CIN, i
 
 
 void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
-  printf("Checking computed result for correctness: ");
+  printf("Checking computed result for correctness: \n");
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
