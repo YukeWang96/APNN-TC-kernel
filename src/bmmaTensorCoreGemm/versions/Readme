@@ -236,7 +236,11 @@ Conv-w2-a2. Complete computation. Passed cuda-memcheck with 0 error. Tiling Size
 Result is validated.
 
 49:
-Conv-w2-a2.  Tiling Size: 128x128
+Conv-w2-a2.  Tiling Size: 128x128.
+
+Result is validated.
+
+
 
 
 

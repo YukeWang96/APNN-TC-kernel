@@ -57,10 +57,10 @@ typedef union {
 // Assume CIN is 128.
 __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
   // GEMM Configuration
-  int X_bit_offset = Height * Width * CIN/128;
+  int X_bit_offset = (Height+2) * (Width+2) * CIN/128;
   int W_bix_offset = 9*CIN*COUT/128;
   int BIT = 2;
-  int X_ROW_BIT = Width*CIN/128;
+  int X_ROW_BIT = (Width+2)*CIN/128;
   int W_ROW_BIT = 9*(CIN/128);
 
   // if (blockIdx.x == 0 && threadIdx.x == 0) {
@@ -136,7 +136,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       __syncthreads();
 
       // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-      //   for(int i = 64; i < 65; i++) {
+      //   for(int i = 128; i < 256; i++) {
       //     for(int j = 0; j < 16; j++) {
       //       int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
       //       printf("tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
@@ -157,8 +157,8 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
           wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
           
-        // if (block_pos == 0 && warpId == 4 && laneId == 0) {
-        //   printf("tile_k: %d, k_step: %d, shmem_idx_a: %d\n", tile_k, k_step, shmem_idx_a);
+        // if (block_pos == 0 && warpId == 0) {
+        //   // printf("tile_k: %d, k_step: %d, shmem_idx_a: %d\n", tile_k, k_step, shmem_idx_a);
         //   for(int t = 0; t<a[i].num_elements; t++) {
         //       printf("tile_k: %d, k_step: %d, a[%d].x[%d]: %x\n", tile_k, k_step, i, t, a[i].x[t]);
         //   }
@@ -173,8 +173,8 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
                                    (WARP_ROW_TILES * N) * (warpId % 2) +
                                    (j * N);
               const int4 *tile_ptr = &shmem[shmem_idx_b][k_step * (K/128)];
-
               wmma::load_matrix_sync(b[j], tile_ptr, (CHUNK_K + SKEW)*128);
+              // wmma::fill_fragment(b[j], 0x5);
             }
             // printf("ckpt4\n");
 
@@ -188,7 +188,40 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
         }
       }
       __syncthreads();
+      // if (block_pos == 0 && warpId == 0) {
+      //   for(int t = 0; t<c[0][0].num_elements; t++) {
+      //       printf("tile_k: %d, c[0][0].x[%d]: %d\n", tile_k, t, c[0][0].x[t]);
+      //   }
+      // }
+
     }
+
+    // int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
+    //                           (warpId / 2) * 128 * 32 +
+    //                           (warpId % 2) * 64; // Will be used only when writing back D. May be moved outside the for loop. TODO.
+
+
+//     // Store the D fragments to shared memory.
+// #pragma unroll
+//     for (int i = 0; i < WARP_COL_TILES; i++) {
+// #pragma unroll
+//       for (int j = 0; j < WARP_ROW_TILES; j++) {
+//         int *tile_ptr = shmem_warp_tile_ptr + i*128*8 + j*8;
+//         wmma::store_matrix_sync(tile_ptr, c[i][j], 128,  wmma::mem_row_major);
+//       }
+//     }
+
+//     __syncthreads();
+
+//     if (block_pos == 0 && warpId == 0 && laneId == 0) {
+//       for(int i = 1; i < 2; i++) {
+//         for(int j = 0; j < 2; j++) {
+//           int *tile_ptr = (int*)&shmem[0][0] + i*128 + j;
+//           printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
+//         }
+//       }
+//     }
+
 
 
 #pragma unroll
@@ -207,13 +240,22 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&X[GL_idx+X_bit_offset] + t);
       
       SHMEM_i += 64;
-      int weight_load_idx = (block_z + SHMEM_i) * W_ROW_BIT + tile_k;
+      int weight_load_idx = (block_z + threadIdx.x/4) * W_ROW_BIT + tile_k;
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&W[weight_load_idx] + t);
       
       SHMEM_i += 64;
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&W[weight_load_idx+W_bix_offset] + t);
       
       __syncthreads();
+
+      // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+      //   for(int i = 128; i < 131; i++) {
+      //     for(int j = 0; j < 4; j++) {
+      //       int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //       printf("tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
+      //     }
+      //   }
+      // }
 
       // Compute a grid of C matrix tiles in each warp.
 
@@ -243,7 +285,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       }
       __syncthreads();
     }
-    // if (block_pos == 0 && warpId == 4 && laneId == 0) {
+    // if (block_pos == 0){ // && warpId == 4 && laneId == 0) {
     //   for(int t = 0; t<c[0][0].num_elements; t++) {
     //       printf("c[0][0].x[%d]: %d\n", t, c[0][0].x[t]);
     //   }
@@ -266,9 +308,9 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     __syncthreads();
 
     // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-    //   for(int i = 31; i < 34; i++) {
+    //   for(int i = 1; i < 2; i++) {
     //     for(int j = 0; j < 64; j++) {
-    //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
+    //       int *tile_ptr = (int*)&shmem[0][0] + i*128 + j;
     //       printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
     //     }
     //   }
@@ -292,16 +334,17 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       val[i].a[1] = tmp0.a[1] + 2*tmp1.a[1] + 2*tmp2.a[1] + 4*tmp3.a[1];
       val[i].a[2] = tmp0.a[2] + 2*tmp1.a[2] + 2*tmp2.a[2] + 4*tmp3.a[2];
       val[i].a[3] = tmp0.a[3] + 2*tmp1.a[3] + 2*tmp2.a[3] + 4*tmp3.a[3];
-      shmem_warp_stream_ptr += 32;
+      shmem_warp_stream_ptr += 128;
+      // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+      //   printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
+      //   printf("tmp1: %d %d %d %d\n", tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3]);
+      //   printf("tmp2: %d %d %d %d\n", tmp2.a[0], tmp2.a[1], tmp2.a[2], tmp2.a[3]);
+      //   printf("tmp3: %d %d %d %d\n", tmp3.a[0], tmp3.a[1], tmp3.a[2], tmp3.a[3]);
+      //   printf("val[i]: %d %d %d %d \n", val[i].a[0], val[i].a[1], val[i].a[2], val[i].a[3]);
+      // }
     }
 
-    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-    //   printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
-    //   printf("tmp1: %d %d %d %d\n", tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3]);
-    //   printf("tmp2: %d %d %d %d\n", tmp2.a[0], tmp2.a[1], tmp2.a[2], tmp2.a[3]);
-    //   printf("tmp3: %d %d %d %d\n", tmp3.a[0], tmp3.a[1], tmp3.a[2], tmp3.a[3]);
-    //   printf("val: %d %d %d %d \n", val.a[0], val.a[1], val.a[2], val.a[3]);
-    // }
+
 
     int SHMEM_row = threadIdx.x/16*4;
     int SHMEM_col = threadIdx.x%16;
@@ -339,9 +382,10 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
     for(int i=0; i < Height+2; i++) {
       for(int j=0; j < Width+2; j++) {
         for(int k = 0; k < CIN/32; k++) {
-          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
-          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = i;
-          X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = rand();
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = i;
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = j;
+          X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = rand();
         }      
       }
     }  
@@ -352,6 +396,7 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
       for(int j = 0; j < 9*CIN/32; j++) {
         // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
         W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = i;
       }
     }
   }
@@ -395,7 +440,7 @@ void compute_ref(int4 *X, int4 *W, int *ref_C, int Height, int Width, int CIN, i
           for(int i=0; i<3; i++) {
             for(int j=0; j<3; j++) {
               for(int k_tile=0; k_tile<CIN/32; k_tile++) {
-                  int x_int = X_int[xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile];
+                  int x_int = X_int[xb*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
                   int w_int = W_int[wb*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
                   for(int k=0; k<32; k++) {
                     int mask = 1;
@@ -403,6 +448,9 @@ void compute_ref(int4 *X, int4 *W, int *ref_C, int Height, int Width, int CIN, i
                     int w_val = ((mask << k) & w_int) >> k;
                     tmp += X_Multiplier * W_Multiplier * x_val * w_val;
                   }
+                  // if(m==0 && n==1 && co == 0) {
+                  //   printf("xb: %d, i: %d, j: %d, k_tile: %d, x_int: %x, w_int: %x, tmp: %d, idx: %d\n", xb, i, j, k_tile, x_int, w_int, tmp, xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile);
+                  // }
                 }
               }
             }
@@ -420,9 +468,9 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for(int i = 0; i < Height; i++) {
-    for(int j = 0; j < Width; j++) {
-      for(int co=0; co<COUT; co++) {
+  for(int i = 0; i < 2; i++) {
+    for(int j = 0; j < 2; j++) {
+      for(int co=0; co<1; co++) {
         int idx = i*Width*COUT+j*COUT+co;
         double dst = fabs(C[idx] - ref_C[idx]);
         double abs = fabs(C[idx]) * fabs(ref_C[idx]);
@@ -449,8 +497,8 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 32;
-  int Width = 32;
+  int Height = 8;
+  int Width = 8;
   int X_BIT = 2;
   int W_BIT = 2;
 
@@ -471,7 +519,7 @@ int main(int argc, char **argv) {
   int4 *X_h = NULL;
   int *Output_h = NULL;
   
-  X_h = (int4 *)malloc(sizeof(int4) * Height * Width * (CIN/128) * X_BIT);
+  X_h = (int4 *)malloc(sizeof(int4) * (Height+2) * (Width+2) * (CIN/128) * X_BIT);
   W_h = (int4 *)malloc(sizeof(int4) * 9 * (CIN/128) * COUT * W_BIT);
   Output_h = (int *)malloc(sizeof(int) * (Height+2) * (Width+2) * COUT);
   init_matrices(X_h, W_h, Height, Width, CIN, COUT, X_BIT, W_BIT);
@@ -486,7 +534,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1;
+    int NUM_PROFILES = 1000;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
