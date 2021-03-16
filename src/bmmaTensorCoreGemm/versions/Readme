@@ -242,6 +242,11 @@ Result is validated.
 
 
 52:
+Conv-w1-a2. Tiling Size: 64x64.
+
+Result is validated.
+
+52:
 Conv-w1-a2. Tiling Size: 128x128.
 
 Result is validated.
