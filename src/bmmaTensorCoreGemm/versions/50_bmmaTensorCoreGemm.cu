@@ -285,6 +285,19 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       }
       __syncthreads();
     }
+
+
+#pragma unroll
+    for (int i = 0; i < WARP_COL_TILES; i++) {
+#pragma unroll
+      for (int j = 0; j < WARP_ROW_TILES/2; j++) {
+        for(int t = 0; t<c[i][j].num_elements; t++) {
+            c[i][j].x[t] = c[i][j].x[t] + (c[i][j+WARP_ROW_TILES/2].x[t]<<16);
+        }
+      }
+    }
+
+
     // if (block_pos == 0){ // && warpId == 4 && laneId == 0) {
     //   for(int t = 0; t<c[0][0].num_elements; t++) {
     //       printf("c[0][0].x[%d]: %d\n", t, c[0][0].x[t]);
@@ -299,7 +312,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 #pragma unroll
     for (int i = 0; i < WARP_COL_TILES; i++) {
 #pragma unroll
-      for (int j = 0; j < WARP_ROW_TILES; j++) {
+      for (int j = 0; j < WARP_ROW_TILES/2; j++) {
         int *tile_ptr = shmem_warp_tile_ptr + i*128*8 + j*8;
         wmma::store_matrix_sync(tile_ptr, c[i][j], 128,  wmma::mem_row_major);
       }
@@ -502,7 +515,8 @@ int main(int argc, char **argv) {
   int X_BIT = 2;
   int W_BIT = 2;
 
-  for(int CIN = 128; CIN <= 2048; CIN+=128) {
+  // for(int CIN = 128; CIN <= 2048; CIN+=128) {
+    int CIN = 2048;
     int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
@@ -560,7 +574,7 @@ int main(int argc, char **argv) {
   
   
 
-  }
+  // }
 
 
 

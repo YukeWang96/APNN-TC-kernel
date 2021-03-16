@@ -57,10 +57,10 @@ typedef union {
 // Assume CIN is 128.
 __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
   // GEMM Configuration
-  int X_bit_offset = Height * Width * CIN/128;
+  int X_bit_offset = (Height+2) * (Width+2) * CIN/128;
   int W_bix_offset = 9*CIN*COUT/128;
   int BIT = 2;
-  int X_ROW_BIT = Width*CIN/128;
+  int X_ROW_BIT = (Width+2)*CIN/128;
   int W_ROW_BIT = 9*(CIN/128);
 
   // if (blockIdx.x == 0 && threadIdx.x == 0) {
@@ -92,7 +92,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       break;
     }
 
-    int image_starting_idx = block_i * Width * CIN/128 + block_j * CIN/128;
+    int image_starting_idx = block_i * (Width+2) * CIN/128 + block_j * CIN/128;
 
     for(int i=0; i < WARP_COL_TILES; i++)
       for(int j=0; j < WARP_ROW_TILES; j++)
@@ -319,9 +319,10 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
     for(int i=0; i < Height+2; i++) {
       for(int j=0; j < Width+2; j++) {
         for(int k = 0; k < CIN/32; k++) {
-          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
-          // X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = i;
-          X_int[b*Height*Width*CIN/32 + i*Width*CIN/32 + j*CIN/32 + k] = rand();
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = i;
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = j;
+          X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = rand();
         }      
       }
     }  
@@ -332,6 +333,7 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
       for(int j = 0; j < 9*CIN/32; j++) {
         // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
         W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = i;
       }
     }
   }
@@ -375,7 +377,7 @@ void compute_ref(int4 *X, int4 *W, int *ref_C, int Height, int Width, int CIN, i
           for(int i=0; i<3; i++) {
             for(int j=0; j<3; j++) {
               for(int k_tile=0; k_tile<CIN/32; k_tile++) {
-                  int x_int = X_int[xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile];
+                  int x_int = X_int[xb*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
                   int w_int = W_int[wb*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
                   for(int k=0; k<32; k++) {
                     int mask = 1;
@@ -383,6 +385,9 @@ void compute_ref(int4 *X, int4 *W, int *ref_C, int Height, int Width, int CIN, i
                     int w_val = ((mask << k) & w_int) >> k;
                     tmp += X_Multiplier * W_Multiplier * x_val * w_val;
                   }
+                  // if(m==0 && n==1 && co == 0) {
+                  //   printf("xb: %d, i: %d, j: %d, k_tile: %d, x_int: %x, w_int: %x, tmp: %d, idx: %d\n", xb, i, j, k_tile, x_int, w_int, tmp, xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile);
+                  // }
                 }
               }
             }
@@ -419,7 +424,7 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
-// #define verify_output
+#define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");
@@ -429,14 +434,14 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 32;
-  int Width = 32;
+  int Height = 16;
+  int Width = 16;
   int X_BIT = 2;
   int W_BIT = 2;
 
   // for(int CIN = 128; CIN <= 2048; CIN+=128) {
-    int CIN=128;
-    int COUT = 128;
+    int CIN = 128;
+    int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
     int *Output = NULL;
@@ -451,7 +456,7 @@ int main(int argc, char **argv) {
   int4 *X_h = NULL;
   int *Output_h = NULL;
   
-  X_h = (int4 *)malloc(sizeof(int4) * Height * Width * (CIN/128) * X_BIT);
+  X_h = (int4 *)malloc(sizeof(int4) * (Height+2) * (Width+2) * (CIN/128) * X_BIT);
   W_h = (int4 *)malloc(sizeof(int4) * 9 * (CIN/128) * COUT * W_BIT);
   Output_h = (int *)malloc(sizeof(int) * (Height+2) * (Width+2) * COUT);
   init_matrices(X_h, W_h, Height, Width, CIN, COUT, X_BIT, W_BIT);
@@ -466,7 +471,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1;
+    int NUM_PROFILES = 1000;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
