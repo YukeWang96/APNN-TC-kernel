@@ -155,7 +155,7 @@ Now, it computes correctly for various matrix sizes, since I have manually teste
 后面的APMM都是基于这个改的。
 
 29:
-APNN-2bit x 2bit. Modified from V28.
+APNN-2bit x 2bit. Modified from V28. Tiling Size: 128x128
 Results are validated.
 
 30:
@@ -231,9 +231,12 @@ Conv-w2-a2. Combine 45 & 46.
 0.0141 ms. 比cutlass-int4快1.17x.
 
 48:
-Conv-w2-a2. Complete computation. Passed cuda-memcheck with 0 error.
+Conv-w2-a2. Complete computation. Passed cuda-memcheck with 0 error. Tiling Size: 64x64
 
-Result is not validated yet.
+Result is validated.
+
+49:
+Conv-w2-a2.  Tiling Size: 128x128
 
 
 
