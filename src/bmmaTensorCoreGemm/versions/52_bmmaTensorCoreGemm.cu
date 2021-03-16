@@ -90,7 +90,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       break;
     }
 
-    int image_starting_idx = block_i * Width * CIN/128 + block_j * CIN/128;
+    int image_starting_idx = block_i * (Width+2) * CIN/128 + block_j * CIN/128;
 
     for(int i=0; i < WARP_COL_TILES; i++)
       for(int j=0; j < WARP_ROW_TILES; j++)
@@ -460,9 +460,9 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for(int i = 0; i < 2; i++) {
-    for(int j = 0; j < 2; j++) {
-      for(int co=0; co<1; co++) {
+  for(int i = 0; i < Height; i++) {
+    for(int j = 0; j < Width; j++) {
+      for(int co=0; co<COUT; co++) {
         int idx = i*Width*COUT+j*COUT+co;
         double dst = fabs(C[idx] - ref_C[idx]);
         double abs = fabs(C[idx]) * fabs(ref_C[idx]);
@@ -479,7 +479,7 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
-// #define verify_output
+#define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");
@@ -494,8 +494,8 @@ int main(int argc, char **argv) {
   int X_BIT = 2;
   int W_BIT = 1;
 
-  for(int CIN = 128; CIN <= 2048; CIN+=128) {
-    // int CIN = 128;
+  // for(int CIN = 128; CIN <= 2048; CIN+=128) {
+    int CIN = 128;
     // int COUT = 128;
     int COUT = CIN;
     int4 *X = NULL;
@@ -552,7 +552,7 @@ int main(int argc, char **argv) {
   
     printf("TOPS: %.2f\n\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
   
-  }
+  // }
 
 
 
