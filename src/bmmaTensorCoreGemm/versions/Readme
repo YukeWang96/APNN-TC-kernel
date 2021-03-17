@@ -274,6 +274,11 @@ Result is validated.
 Conv-w1a8. Tiling Size: 128x128.
 Result is validated.
 
+57:
+Conv-w2a8. Tiling Size: 64x64.
 
+
+58:
+Conv-w2a8. Tiling Size: 128x128.
 
 
