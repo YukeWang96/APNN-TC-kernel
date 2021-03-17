@@ -241,7 +241,12 @@ Conv-w2-a2.  Tiling Size: 128x128.
 Result is validated.
 
 
-52:
+50:
+Conv-w2-a2.  Tiling Size: 128x128.
+
+Some trick on FRAG. The performance improvement is not significant.
+
+51:
 Conv-w1-a2. Tiling Size: 64x64.
 
 Result is validated.
@@ -249,6 +254,16 @@ Result is validated.
 52:
 Conv-w1-a2. Tiling Size: 128x128.
 
+Result is validated.
+
+
+53:
+Conv-w1-a4. Tiling Size: 64x64.
+Result is validated.
+
+
+54:
+Conv-w1-a4. Tiling Size: 128x128.
 Result is validated.
 
 
