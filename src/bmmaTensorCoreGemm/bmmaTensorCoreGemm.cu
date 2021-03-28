@@ -82,8 +82,8 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_i = (block_pos/(COUT/128)) / (Width/7) * 6;
-    const unsigned int block_j = (block_pos/(COUT/128)) % (Width/7) * 7;
+    const unsigned int block_i = (block_pos/(COUT/128)) / (Width/8) * 4;
+    const unsigned int block_j = (block_pos/(COUT/128)) % (Width/8) * 8;
     const unsigned int block_z = block_pos % (COUT/128) * 128;
 
     if (block_i >= Height) {
@@ -103,10 +103,10 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     for (int tile_k = 0; tile_k+CHUNK_K < 9*CIN/128; tile_k += CHUNK_K) {
 
       int SHMEM_i = threadIdx.x/4;
-      int bit_flag = SHMEM_i / 42;
-      int SHMEM_offset = SHMEM_i % 42;
-      int row = SHMEM_offset / 7;
-      int col = SHMEM_offset % 7;
+      int bit_flag = SHMEM_i / 32;
+      int SHMEM_offset = SHMEM_i % 32;
+      int row = SHMEM_offset / 8;
+      int col = SHMEM_offset % 8;
       int t = threadIdx.x % 4;
 
       int sub_row = (tile_k+t)/(3*CIN/128);
@@ -124,7 +124,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       shmem[SHMEM_i][t] = X[GL_idx];
 
       SHMEM_i += 64;
-      shmem[SHMEM_i][t] = X[GL_idx+1*X_bit_offset];
+      shmem[SHMEM_i][t] = X[GL_idx+2*X_bit_offset];
       
       SHMEM_i += 64;
       int weight_load_idx = (block_z + threadIdx.x/4) * W_ROW_BIT + tile_k + t;
@@ -227,10 +227,10 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 #pragma unroll
     for (int tile_k = int(9*CIN/128/CHUNK_K)*CHUNK_K; tile_k < 9*CIN/128; tile_k++) {
       int SHMEM_i = threadIdx.x/4;
-      int bit_flag = SHMEM_i / 42;
-      int SHMEM_offset = SHMEM_i % 42;
-      int row = SHMEM_offset / 7;
-      int col = SHMEM_offset % 7;
+      int bit_flag = SHMEM_i / 32;
+      int SHMEM_offset = SHMEM_i % 32;
+      int row = SHMEM_offset / 8;
+      int col = SHMEM_offset % 8;
       int t = threadIdx.x % 4;
 
       int sub_row = (tile_k)/(3*CIN/128);
@@ -239,7 +239,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       int GL_idx = image_starting_idx + bit_flag*X_bit_offset + row*X_ROW_BIT + col*CIN/128 + sub_row*X_ROW_BIT + sub_col;
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&X[GL_idx] + t);
       SHMEM_i += 64;
-      *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&X[GL_idx+1*X_bit_offset] + t);
+      *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&X[GL_idx+2*X_bit_offset] + t);
       
       SHMEM_i += 64;
       int weight_load_idx = (block_z + threadIdx.x/4) * W_ROW_BIT + tile_k;
@@ -319,19 +319,23 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     // }
 
 
-    U4 tmp[3];
-    U4 val[5];
+    U4 tmp0;
+    U4 tmp1;
+    U4 tmp2;
+    U4 tmp3;
+    U4 val[4];
 
-    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x/32*5*128 + (threadIdx.x%32)*4;
+    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x/32*4*128 + (threadIdx.x%32)*4;
 #pragma unroll
-    for(int i = 0; i < 5; i++) {
-      tmp[0].vec = *((int4*)shmem_warp_stream_ptr);
-      tmp[1].vec = *((int4*)shmem_warp_stream_ptr+42*32);
-      tmp[2].vec = *((int4*)shmem_warp_stream_ptr+84*32);
-      val[i].a[0] = tmp[0].a[0] + 2*tmp[1].a[0] + 4*tmp[2].a[0];
-      val[i].a[1] = tmp[0].a[1] + 2*tmp[1].a[1] + 4*tmp[2].a[1];
-      val[i].a[2] = tmp[0].a[2] + 2*tmp[1].a[2] + 4*tmp[2].a[2];
-      val[i].a[3] = tmp[0].a[3] + 2*tmp[1].a[3] + 4*tmp[2].a[3];
+    for(int i = 0; i < 4; i++) {
+      tmp0.vec = *((int4*)shmem_warp_stream_ptr);
+      tmp1.vec = *((int4*)shmem_warp_stream_ptr+32*32);
+      tmp2.vec = *((int4*)shmem_warp_stream_ptr+64*32);
+      tmp3.vec = *((int4*)shmem_warp_stream_ptr+96*32);
+      val[i].a[0] = tmp0.a[0] + 2*tmp1.a[0] + 4*tmp2.a[0] + 8*tmp3.a[0];
+      val[i].a[1] = tmp0.a[1] + 2*tmp1.a[1] + 4*tmp2.a[1] + 8*tmp3.a[1];
+      val[i].a[2] = tmp0.a[2] + 2*tmp1.a[2] + 4*tmp2.a[2] + 8*tmp3.a[2];
+      val[i].a[3] = tmp0.a[3] + 2*tmp1.a[3] + 4*tmp2.a[3] + 8*tmp3.a[3];
       shmem_warp_stream_ptr += 128;
       // if (block_pos == 6 && warpId == 0 && laneId == 0) {
       //   printf("tmp0: %d %d %d %d\n", tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3]);
@@ -342,10 +346,10 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       // }
     }
 
-    int SHMEM_row = threadIdx.x/32*5;
+    int SHMEM_row = threadIdx.x/32*4;
     int SHMEM_col = threadIdx.x%32;
-    int Output_row = SHMEM_row/7;
-    int Output_col = SHMEM_row%7;
+    int Output_row = SHMEM_row/8;
+    int Output_col = SHMEM_row%8;
 
     int* dst_gmem_warp_stream_ptr = Output + block_i*Width * COUT + block_j*COUT + block_z 
               + Output_row*Width*COUT + Output_col*COUT
@@ -358,11 +362,11 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     //     + SHMEM_col*4);
     // }
 #pragma unroll
-    for(int i=0; i<5; i++) {
+    for(int i=0; i<4; i++) {
       *(int4*)dst_gmem_warp_stream_ptr = val[i].vec;
       SHMEM_row += 1;
-      Output_row = SHMEM_row/7;
-      Output_col = SHMEM_row%7;
+      Output_row = SHMEM_row/8;
+      Output_col = SHMEM_row%8;
       dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT + block_j*COUT + block_z 
               + Output_row*Width*COUT + Output_col*COUT
               + SHMEM_col*4;
@@ -493,13 +497,14 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 16;
-  int Width = 16;
-  int X_BIT = 8;
+  int Height = 32;
+  int Width = 32;
+  int X_BIT = 4;
   int W_BIT = 1;
 
-  for(int CIN = 128; CIN <= 2048; CIN+=128) {
-    // int CIN = 128;
+  // for(int CIN = 128; CIN <= 2048; CIN+=128) {
+    int CIN = 2048;
+    // int COUT = 128;
     int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
@@ -555,7 +560,7 @@ int main(int argc, char **argv) {
   
     printf("TOPS: %.2f\n\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
   
-  }
+  // }
 
 
 

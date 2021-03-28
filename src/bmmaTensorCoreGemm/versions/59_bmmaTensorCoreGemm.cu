@@ -83,8 +83,8 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_i = (block_pos/(COUT/64)) / (Width/4) * 3;
-    const unsigned int block_j = (block_pos/(COUT/64)) % (Width/4) * 7;
+    const unsigned int block_i = (block_pos/(COUT/64)) / (Width/7) * 3;
+    const unsigned int block_j = (block_pos/(COUT/64)) % (Width/7) * 7;
     const unsigned int block_z = block_pos % (COUT/64) * 64;
     if (block_i >= Height) {
       break;
@@ -451,8 +451,8 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 32;
-  int Width = 32;
+  int Height = 16;
+  int Width = 16;
   int X_BIT = 3;
   int W_BIT = 1;
 

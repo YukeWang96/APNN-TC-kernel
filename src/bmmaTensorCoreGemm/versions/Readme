@@ -288,3 +288,16 @@ Conv-w1a3. Tiling Size: 64x64.
 60:
 Conv-w1a3. Tiling Size: 128x128.
 
+61:
+Conv-w1a5. Tiling Size: 64x64.
+
+62:
+Conv-w1a5. Tiling Size: 128x128.
+
+63:
+Conv-w2a6. Tiling Size: 64x64.
+
+64:
+Conv-w2a6. Tiling Size: 128x128.
+
+
