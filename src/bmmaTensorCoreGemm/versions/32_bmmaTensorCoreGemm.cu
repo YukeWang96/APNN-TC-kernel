@@ -24,15 +24,7 @@
 #define N 8
 #define K 128
 
-// GEMM configuration.
 
-#define M_TILES 128
-#define N_TILES 128
-#define K_TILES 8
-
-#define M_GLOBAL (M * M_TILES)
-#define N_GLOBAL (N * N_TILES)
-#define K_GLOBAL (K * K_TILES)
 
 #define C_LAYOUT wmma::mem_row_major
 
@@ -92,7 +84,15 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma::experimental;
 
-__global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
+__global__ void apmm_w1a4(const int4 *A, const int4 *B, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int xb, int wb) {
+  // GEMM configuration.
+  M_GLOBAL = M_GLOBAL * wb;
+  N_GLOBAL = N_GLOBAL * xb;
+
+  int M_TILES = M_GLOBAL / M;
+  int N_TILES = N_GLOBAL / N;
+  int K_TILES = K_GLOBAL / K;
+
   extern __shared__ int4 shmem[][CHUNK_K+SKEW]; // TODO: Padding opportunity may exist here.
 
   // Warp and lane identification.
@@ -293,291 +293,102 @@ __global__ void compute_gemm_imma(const int4 *A, const int4 *B, int *D) {
   }
 }
 
-void init_matrices(int4 *A, int4 *B){
-  int *A_int = (int*) A;
-  int *B_int = (int*) B;
-  for(int i = 0; i < M_GLOBAL; i++) {
-    for(int j = 0; j < K_GLOBAL/32; j++) {
-      A_int[i*K_GLOBAL/32+j] = 0xFFFFFFFF;
-      // A_int[i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
-      A_int[i*K_GLOBAL/32+j] = rand();
-    }
-  }
-
-  for(int i = 0; i < N_GLOBAL; i++) {
-    for(int j = 0; j < K_GLOBAL/32; j++) {
-      B_int[i*K_GLOBAL/32+j] = 0xFFFFFFFF;
-      // B_int[i*K_GLOBAL/32+j] = i;
-      B_int[i*K_GLOBAL/32+j] = rand();
-    }
-  }
-}
-
-int popcnt(int i) {
-  // Java: use int, and use >>> instead of >>
-  // C or C++: use int
-  i = i - ((i >> 1) & 0x55555555);
-  i = (i & 0x33333333) + ((i >> 2) & 0x33333333);
-  return (((i + (i >> 4)) & 0x0F0F0F0F) * 0x01010101) >> 24;
-}
-
-void compute_ref(int4 *A, int4 *B, int *ref_C) {
-  int *A_int = (int*) A;
-  int *B_int = (int*) B;
-
-  for (int m = 0; m < M_GLOBAL; m++) {
-    for (int n = 0; n < N_GLOBAL; n++) {
-      int tmp = 0;
-      for (int k = 0; k < K_GLOBAL; k += 32) {
-        // bit vector from row A and column B, accumulation and addition.
-        tmp += popcnt(A_int[(m*K_GLOBAL + k)/32] ^ B_int[(n*K_GLOBAL + k)/32]);
-      }
-      // ref_C[m * K + n]= K - 2 * tmp;
-      ref_C[m * N_GLOBAL + n]= tmp;
-    }
-  }
-}
-
-void compute_ref_w2a2(int4 *A, int4 *B, int *ref_C) {
-  int *A_int = (int*) A;
-  int *B_int = (int*) B;
-
-  for (int m = 0; m < M_GLOBAL/2; m++) {
-  for (int n = 0; n < N_GLOBAL/2; n++) {
-    int tmp = 0;
-    for (int k = 0; k < K_GLOBAL; k += 32) {
-      int val10 = A_int[(2*m*K_GLOBAL + k)/32];
-      int val11 = A_int[((2*m+1)*K_GLOBAL + k)/32];
-      int val20 = B_int[(2*n*K_GLOBAL + k)/32];
-      int val21 = B_int[((2*n+1)*K_GLOBAL + k)/32];
-      int mask = 1;
-      // if (m == 0 && n == 0) {
-      //   printf("val10: %d, val11: %d, val20: %d, val21: %d\n", val10, val11, val20, val21);
-      // }
-      for (int shift_i =0; shift_i < 32; ++shift_i) {
-        int A_val0 = (val10 & mask) >> shift_i;
-        int A_val1 = (val11 & mask) >> shift_i;
-        int A_val = A_val0 + A_val1*2;
-        int B_val0 = (val20 & mask) >> shift_i;
-        int B_val1 = (val21 & mask) >> shift_i;
-        int B_val = B_val0 + B_val1*2;
-        tmp += (A_val * B_val);
-        // if (m == 0 && n == 0) {
-        //   printf("m: %d, n: %d, A_val0: %d, A_val1: %d, B_val0: %d, B_val1: %d, A_val: %d, B_val: %d, tmp: %d\n", m, n, A_val0, A_val1, B_val0, B_val1, A_val, B_val, tmp);
-        // }
-        mask *= 2;
-      }
-    }
-    // ref_C[m * K + n]= K - 2 * tmp;
-    ref_C[m * N_GLOBAL/2 + n]= tmp;
-    }
-  }
-}
-
-void compute_ref_w1a2(int4 *A, int4 *B, int *ref_C) {
-  int *A_int = (int*) A;
-  int *B_int = (int*) B;
-
-  for (int m = 0; m < M_GLOBAL; m++) {
-  for (int n = 0; n < N_GLOBAL/2; n++) {
-    int tmp = 0;
-    for (int k = 0; k < K_GLOBAL; k += 32) {
-      int val1 = A_int[(m*K_GLOBAL + k)/32];
-      int val20 = B_int[(2*n*K_GLOBAL + k)/32];
-      int val21 = B_int[((2*n+1)*K_GLOBAL + k)/32];
-      int mask = 1;
-      // if (m == 0 && n == 0) {
-      //   printf("val10: %d, val11: %d, val20: %d, val21: %d\n", val10, val11, val20, val21);
-      // }
-      for (int shift_i =0; shift_i < 32; ++shift_i) {
-        int A_val = (val1 & mask) >> shift_i;
-        int B_val0 = (val20 & mask) >> shift_i;
-        int B_val1 = (val21 & mask) >> shift_i;
-        int B_val = B_val0 + B_val1*2;
-        tmp += (A_val * B_val);
-        // if (m == 0 && n == 0) {
-        //   printf("m: %d, n: %d, A_val0: %d, A_val1: %d, B_val0: %d, B_val1: %d, A_val: %d, B_val: %d, tmp: %d\n", m, n, A_val0, A_val1, B_val0, B_val1, A_val, B_val, tmp);
-        // }
-        mask *= 2;
-      }
-    }
-    // ref_C[m * K + n]= K - 2 * tmp;
-    ref_C[m * N_GLOBAL/2 + n]= tmp;
-  }
-  }
-}
-
-void compute_ref_w1a4(int4 *A, int4 *B, int *ref_C) {
-  int *A_int = (int*) A;
-  int *B_int = (int*) B;
-
-  for (int m = 0; m < M_GLOBAL; m++) {
-    for (int n = 0; n < N_GLOBAL/4; n++) {
-      int tmp = 0;
-      for (int k = 0; k < K_GLOBAL; k += 32) {
-        int val1 = A_int[(m*K_GLOBAL + k)/32];
-        int val20 = B_int[(4*n*K_GLOBAL + k)/32];
-        int val21 = B_int[((4*n+1)*K_GLOBAL + k)/32];
-        int val22 = B_int[((4*n+2)*K_GLOBAL + k)/32];
-        int val23 = B_int[((4*n+3)*K_GLOBAL + k)/32];
-        int mask = 1;
-        // if (m == 0 && n == 0) {
-        //   printf("val10: %d, val11: %d, val20: %d, val21: %d\n", val10, val11, val20, val21);
-        // }
-        for (int shift_i =0; shift_i < 32; ++shift_i) {
-          int A_val = (val1 & mask) >> shift_i;
-          int B_val0 = (val20 & mask) >> shift_i;
-          int B_val1 = (val21 & mask) >> shift_i;
-          int B_val2 = (val22 & mask) >> shift_i;
-          int B_val3 = (val23 & mask) >> shift_i;
-          int B_val = B_val0 + B_val1*2 + B_val2*4 + B_val3*8;
-          tmp += (A_val * B_val);
-          // if (m == 0 && n == 0) {
-          //   printf("m: %d, n: %d, shift_i: %d, A_val: %d, B_val0: %d, B_val1: %d, B_val2: %d, B_val3: %d, A_val: %d, B_val: %d, tmp: %d\n", m, n, shift_i, A_val, B_val0, B_val1, B_val2, B_val3, A_val, B_val, tmp);
-          // }
-          mask *= 2;
-        }
-      }
-      // ref_C[m * K + n]= K - 2 * tmp;
-      ref_C[m * N_GLOBAL/4 + n]= tmp;
-    }
-  }
-}
-
-
-void validate_results(int *C, int* ref_C, int M_, int N_) {
-  printf("Checking computed result for correctness: ");
-  bool correct = true;
-  double eps = 1.e-6;  // machine zero
-
-  for(int i = 0; i < M_; i++) {
-    for(int j = 0; j < N_; j++) {
-      int idx = i*N_+j;
-      double dst = fabs(C[idx] - ref_C[idx]);
-      double abs = fabs(C[idx]) * fabs(ref_C[idx]);
-      double ref_err = dst / abs;
-      if (ref_err > eps) {
-        // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
-        printf("i: %d, j: %d, C: %d, ref_C: %d\n", i, j, C[idx], ref_C[idx]);
-        // printf("non equal\n");
-        correct = false;
-      }
-    }
-  }
-  printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
-}
-
-
-
 // #define verify_output
 
+
 int main(int argc, char **argv) {
-printf("Initializing...\n");
 
-int dev = findCudaDevice(argc, (const char **)argv);
+  int dev = findCudaDevice(argc, (const char **)argv);
 
-cudaDeviceProp deviceProp;
-checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
+  cudaDeviceProp deviceProp;
+  checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-printf("M: %d (%d x %d)\n", M_GLOBAL, M, M_TILES);
-printf("N: %d (%d x %d)\n", N_GLOBAL, N, N_TILES);
-printf("K: %d (%d x %d)\n", K_GLOBAL, K, K_TILES);
+  int X_BIT = 4;
+  int W_BIT = 1;
 
-int4 *A_h = NULL;
-int4 *B_h = NULL;
-int *C_h = NULL;
+  for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
+    int N_GLOBAL = M_GLOBAL;
+    int K_GLOBAL = M_GLOBAL;
+  
+    int4 *X = NULL;
+    int4 *W = NULL;
+    int *Output = NULL;
+  
+    checkCudaErrors(
+        cudaMalloc(reinterpret_cast<void **>(&X), sizeof(int4) * M_GLOBAL * (K_GLOBAL/128) * X_BIT));
+    checkCudaErrors(
+        cudaMalloc(reinterpret_cast<void **>(&W), sizeof(int4) * N_GLOBAL * (K_GLOBAL/128)* W_BIT));
+    checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&Output), sizeof(int) * M_GLOBAL * N_GLOBAL));
+    
+    
+// #ifdef verify_output
+//     int4 *X_h = NULL;
+//     int4 *W_h = NULL;
+//     int *Output_h = NULL;
+  
+//     X_h = (int4 *)malloc(sizeof(int4) * M_GLOBAL * (K_GLOBAL/128) * X_BIT);
+//     W_h = (int4 *)malloc(sizeof(int4) * (K_GLOBAL/128) * N_GLOBAL * W_BIT);
+//     Output_h = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
+//     printf("Preparing validation data for GPU...\n");
+//     init_matrices(A_h, B_h);
+//     checkCudaErrors(cudaMemcpy(A, A_h, sizeof(int4) * M_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
+//     checkCudaErrors(cudaMemcpy(B, B_h, sizeof(int4) * N_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
+// #endif
+  
+    int SHMEM_SZ = 65536;
+    checkCudaErrors(cudaFuncSetAttribute(
+      apmm_w1a4, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      SHMEM_SZ));
+  
+    // Run ours NUM_PROFILES times and record time.
+    float bmma_ms_avg = 0.0f;
+    int NUM_PROFILES = 200;
+    for(int iter=0; iter<NUM_PROFILES; ++iter){
+            float bmma_ms = 0.0f;
+            cudaEvent_t bmma_start;
+            cudaEvent_t bmma_end;
+            cudaEventCreate(&bmma_start);
+            cudaEventCreate(&bmma_end);
+            cudaEventRecord(bmma_start);
+            checkKernelErrors(
+              (apmm_w1a4<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+                                    SHMEM_SZ>>>(X, W, Output, M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT)));
+                  cudaEventRecord(bmma_end);
+            cudaEventSynchronize(bmma_end);
+            cudaEventElapsedTime(&bmma_ms, bmma_start, bmma_end);
+            cudaEventDestroy(bmma_start);
+            cudaEventDestroy(bmma_end);
+            bmma_ms_avg += bmma_ms;
+    }
+  
+    bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
 
-A_h = (int4 *)malloc(sizeof(int4) * M_GLOBAL * (K_GLOBAL/128));
-B_h = (int4 *)malloc(sizeof(int4) * (K_GLOBAL/128) * N_GLOBAL);
-C_h = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
+    printf("V32, 128x128. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
+    printf("Time: %f ms\n", bmma_ms_avg);  
+    printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
+  
+  
+// #ifdef verify_output
+//   printf("Validating results...\n");
+//   checkCudaErrors(cudaMemcpy(C_h, C, sizeof(int) * M_GLOBAL * N_GLOBAL, cudaMemcpyDeviceToHost));
 
-int4 *A = NULL;
-int4 *B = NULL;
-int *C = NULL;
+//   int *C_ref = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
 
-checkCudaErrors(
-   cudaMalloc(reinterpret_cast<void **>(&A), sizeof(int4) * M_GLOBAL * (K_GLOBAL/128)));
-checkCudaErrors(
-   cudaMalloc(reinterpret_cast<void **>(&B), sizeof(int4) * N_GLOBAL * (K_GLOBAL/128)));
-checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&C), sizeof(int) * M_GLOBAL * N_GLOBAL));
+//   /* Copmpute reference matrix on CPU */
+//   compute_ref_w1a2(A_h, B_h, C_ref);
 
-assert(((unsigned long long)A) % 128 == 0);
-assert(((unsigned long long)B) % 128 == 0);
-assert(((unsigned long long)C) % 128 == 0);
+//   /* validation results */
+//   validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL/2);
+//   free(A_h);
+//   free(B_h);
+//   free(C_h);
+// #endif
+  
+    checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
+    checkCudaErrors(cudaFree(reinterpret_cast<void *>(W)));
+    checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
+  
+  }
 
-enum {
- // Compute the right amount of shared memory to request.
- // We need shared memory to hold per-CTA C and D matrix tiles, and to cache
- // per-CTA chunks
- // of the A and B matrices. Therefore, the right amount to request is the
- // maximum of those
- // two numbers.
- SHMEM_SZ = MAX(sizeof(int4) * (BLOCK_COL_TILES * M) *
-                    (CHUNK_K * (K/128) + SKEW) * 2,
-                M * (BLOCK_ROW_WARPS * WARP_ROW_TILES) * N *
-                    (BLOCK_COL_WARPS * WARP_COL_TILES) * sizeof(int))
-};
-
-printf("Required shared memory size: %lu Kb\n", SHMEM_SZ / 1024UL);
-
-#ifdef verify_output
-printf("Preparing validation data for GPU...\n");
-init_matrices(A_h, B_h);
-checkCudaErrors(cudaMemcpy(A, A_h, sizeof(int4) * M_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
-checkCudaErrors(cudaMemcpy(B, B_h, sizeof(int4) * N_GLOBAL * (K_GLOBAL/128), cudaMemcpyHostToDevice));
-#endif
-
-checkCudaErrors(cudaFuncSetAttribute(
- compute_gemm_imma, cudaFuncAttributeMaxDynamicSharedMemorySize,
- SHMEM_SZ));
-
-// Run ours NUM_PROFILES times and record time.
-float bmma_ms_avg = 0.0f;
-int NUM_PROFILES = 1;
-for(int iter=0; iter<NUM_PROFILES; ++iter){
-       float bmma_ms = 0.0f;
-       cudaEvent_t bmma_start;
-       cudaEvent_t bmma_end;
-       cudaEventCreate(&bmma_start);
-       cudaEventCreate(&bmma_end);
-       cudaEventRecord(bmma_start);
-       checkKernelErrors(
-         (compute_gemm_imma<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
-                               SHMEM_SZ>>>(A, B, C)));
-             cudaEventRecord(bmma_end);
-       cudaEventSynchronize(bmma_end);
-       cudaEventElapsedTime(&bmma_ms, bmma_start, bmma_end);
-       cudaEventDestroy(bmma_start);
-       cudaEventDestroy(bmma_end);
-       bmma_ms_avg += bmma_ms;
-}
-
-bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
-
-printf("Time: %f ms\n", bmma_ms_avg);
-
-printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * (N_GLOBAL/4) * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
-
-
-#ifdef verify_output
-printf("Validating results...\n");
-checkCudaErrors(cudaMemcpy(C_h, C, sizeof(int) * M_GLOBAL * N_GLOBAL, cudaMemcpyDeviceToHost));
-
-int *C_ref = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
-
-/* Copmpute reference matrix on CPU */
-compute_ref_w1a4(A_h, B_h, C_ref);
-
-/* validation results */
-validate_results(C_h, C_ref, M_GLOBAL, N_GLOBAL/4);
-#endif
-
-free(A_h);
-free(B_h);
-free(C_h);
-checkCudaErrors(cudaFree(reinterpret_cast<void *>(A)));
-checkCudaErrors(cudaFree(reinterpret_cast<void *>(B)));
-checkCudaErrors(cudaFree(reinterpret_cast<void *>(C)));
-
-return EXIT_SUCCESS;
+  return EXIT_SUCCESS;
 }
