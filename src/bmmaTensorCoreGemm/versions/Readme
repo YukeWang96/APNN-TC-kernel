@@ -305,3 +305,6 @@ Conv-w2a6. Tiling Size: 128x128.
 APMM-w1a2. With the same data layout as Conv. 32-bit output.
 Results validated.
 
+66:
+APMM-w1a2. With the same data layout as Conv. Added quantization and packing.
+Results validated.
