@@ -296,11 +296,11 @@ __global__ void APConv_w1a2_pack_pool(const int4 *W, const int4 *X, int *Output,
     r0 = __ballot_sync(0xFFFFFFFF, bit0);
     r1 = __ballot_sync(0xFFFFFFFF, bit1);
     if (laneId == 0) {
-      printf("r0: %x, r1: %x\n", r0, r1);
+      // printf("r0: %x, r1: %x\n", r0, r1);
       dst_gmem_warp_stream_ptr = Output + block_i/2 * Width/2 * COUT/32 + block_j/2*COUT/32 + block_z/32 
             + Output_row*Width/2*COUT/32 + Output_col*COUT/32;
-      *dst_gmem_warp_stream_ptr = r0;
-      *(dst_gmem_warp_stream_ptr+Width/2*Height/2*COUT/32) = r1;
+      *dst_gmem_warp_stream_ptr = __brev(r0);
+      *(dst_gmem_warp_stream_ptr+Width/2*Height/2*COUT/32) = __brev(r1);
     }
 
     tmp0 = *(shmem_warp_stream_ptr+32);
@@ -324,8 +324,8 @@ __global__ void APConv_w1a2_pack_pool(const int4 *W, const int4 *X, int *Output,
     if (laneId == 0) {
       dst_gmem_warp_stream_ptr = Output + block_i/2 * Width/2 * COUT/32 + block_j/2*COUT/32 + block_z/32 
             + Output_row*Width/2*COUT/32 + Output_col*COUT/32+1;
-      *dst_gmem_warp_stream_ptr = r0;
-      *(dst_gmem_warp_stream_ptr+Width/2*Height/2*COUT/32) = r1;
+      *dst_gmem_warp_stream_ptr = __brev(r0);
+      *(dst_gmem_warp_stream_ptr+Width/2*Height/2*COUT/32) = __brev(r1);
     }
     __syncthreads();
   }
@@ -340,8 +340,8 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
         for(int k = 0; k < CIN/32; k++) {
           // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
           // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = i;
-          X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = j;
-          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = rand();
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = j;
+          X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = rand();
         }      
       }
     }  
@@ -350,9 +350,9 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < COUT; i++) {
       for(int j = 0; j < 9*CIN/32; j++) {
-        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
-        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
-        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = i;
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = i;
+        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
       }
     }
   }
@@ -518,30 +518,47 @@ void compute_ref_pack_pool(int4 *W, int4 *X, int *ref_C, int Height, int Width, 
     }  
   }
 
-  int C_ref_after_pool[Height/2*Width/2*COUT];
-  for(int m=0; m<Height/2; m++) {
-    for(int n=0; n<Width/2; n++) {
+  int size_after_pool = (int)((float)Height /2 * (float)Width/2 * COUT);
+  // printf("Height: %d, Width: %d, COUT: %d, size_after_pool: %d\n", Height, Width, COUT, (int)size_after_pool);
+
+  int half_width = Width/2;
+  int half_height = Height/2;
+
+  int C_ref_after_pool[size_after_pool];
+  for(int m=0; m<half_height; m++) {
+    for(int n=0; n<half_width; n++) {
       for(int co=0; co<COUT; co++) {
-        int val1 = C_ref_before_decompose[m*Width*COUT+n*COUT+co];
-        int val2 = C_ref_before_decompose[m*Width*COUT+(n+Width/2)*COUT+co];
-        int val3 = C_ref_before_decompose[(m+Width/2)*Width*COUT+n*COUT+co];
-        int val4 = C_ref_before_decompose[(m+Width/2)*Width*COUT+(n+Width/2)*COUT+co];
+        int val1 = C_ref_before_decompose[2*m*Width*COUT+2*n*COUT+co];
+        int val2 = C_ref_before_decompose[2*m*Width*COUT+(2*n+1)*COUT+co];
+        int val3 = C_ref_before_decompose[(2*m+1)*Width*COUT+2*n*COUT+co];
+        int val4 = C_ref_before_decompose[(2*m+1)*Width*COUT+(2*n+1)*COUT+co];
         
-        C_ref_after_pool[m*Width/2*COUT+n*COUT+co] = (val1+val2+val3+val4)/4;
+        C_ref_after_pool[m*half_width*COUT+n*COUT+co] = (val1+val2+val3+val4)/4;
       }
     }
   }
 
+  // for(int co=32; co<64; co++) {
+  //   int val1 = C_ref_before_decompose[12*Width*COUT+ 8*COUT+co];
+  //   int val2 = C_ref_before_decompose[12*Width*COUT+ 9*COUT+co];
+  //   int val3 = C_ref_before_decompose[13*Width*COUT+ 8*COUT+co];
+  //   int val4 = C_ref_before_decompose[13*Width*COUT+ 9*COUT+co];
+  //   int val = C_ref_after_pool[6*half_width*COUT+4*COUT+co];
+  //   printf("co: %d, val1: %d, val2: %d, val3: %d, val4: %d, val: %x\n", co, val1, val2, val3, val4, val);
+  // }
 
-  for(int m=0; m<Height/2; m++) {
-    for(int n=0; n<Width/2; n++) {
+
+
+
+  for(int m=0; m<half_height; m++) {
+    for(int n=0; n<half_width; n++) {
       int val[OUT_BIT];
       for(int b=0; b<OUT_BIT; b++) {
         val[b] = 0;
       }
       for(int co_tile = 0; co_tile<COUT/32; co_tile++) {
         for(int co=0; co<32; co++) {
-          int tmp = C_ref_after_pool[m*Width/2*COUT + n*COUT + co_tile*32+co];
+          int tmp = C_ref_after_pool[m*half_width*COUT + n*COUT + co_tile*32+co];
           tmp = (tmp - 0);  // Can be modified for other quantized parameters.
           for(int b=0; b<OUT_BIT; b++) {
             int mask = 1;
@@ -550,15 +567,15 @@ void compute_ref_pack_pool(int4 *W, int4 *X, int *ref_C, int Height, int Width, 
           }
         }
         for(int b=0; b<OUT_BIT; b++) {
-          ref_C[b*Height/2*Width/2*COUT/32+m*Width/2*COUT/32+n*COUT/32 + co_tile] = val[b];
+          ref_C[b*half_height*half_width*COUT/32+m*half_width*COUT/32+n*COUT/32 + co_tile] = val[b];
         }
       }
     }
   }
 }
 
-
-
+// 452ccfff = 01000101001011001100111111111111
+// fff334a2 = 11111111111100110011010010100010
 
 void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   printf("Checking computed result for correctness: \n");
@@ -623,13 +640,13 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 4;
-  int Width = 8;
+  int Height = 32;
+  int Width = 32;
   int X_BIT = 2;
   int W_BIT = 1;
 
   // for(int CIN = 128; CIN <= 2048; CIN+=128) {
-    int CIN = 128;
+    int CIN = 256;
     int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
@@ -660,7 +677,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1000;
+    int NUM_PROFILES = 1;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -689,13 +706,13 @@ int main(int argc, char **argv) {
     printf("Validating results...\n");
     checkCudaErrors(cudaMemcpy(Output_h, Output, sizeof(int) * Height * Width * COUT, cudaMemcpyDeviceToHost));
 
-    int *C_ref = (int *)malloc(sizeof(int) * Height * Width * COUT);
+    int *C_ref = (int *)malloc(sizeof(int) * Height * Width * COUT * X_BIT);
 
     /* Copmpute reference matrix on CPU */
-    // compute_ref_pack_pool(W_h, X_h, C_ref, Height, Width, CIN, COUT, W_BIT, X_BIT, X_BIT);
+    compute_ref_pack_pool(W_h, X_h, C_ref, Height, Width, CIN, COUT, W_BIT, X_BIT, X_BIT);
 
     /* validation results */
-    // validate_results_pack(Output_h, C_ref, Height/2, Width/2, COUT, X_BIT);
+    validate_results_pack(Output_h, C_ref, Height/2, Width/2, COUT, X_BIT);
     free(C_ref);
     free(X_h);
     free(W_h);
@@ -709,3 +726,7 @@ int main(int argc, char **argv) {
 
   return EXIT_SUCCESS;
 }
+
+
+// 758190d5 = 1110101100000011001000011010101
+// bbac6    = 0000000000010111011101011000110
