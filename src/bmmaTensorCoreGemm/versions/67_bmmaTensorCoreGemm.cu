@@ -55,7 +55,7 @@ typedef union {
 
 // Assume that Kernel size is 3x3.
 // Assume CIN is 128.
-__global__ void APConv_w1a2_pack_pool(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
+__global__ void APConv_w1a2_pack(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
   // GEMM Configuration
   int X_bit_offset = (Height+2) * (Width+2) * CIN/128;
   // int W_bit_offset = 9*CIN*COUT/128;
@@ -255,78 +255,68 @@ __global__ void APConv_w1a2_pack_pool(const int4 *W, const int4 *X, int *Output,
 
     __syncthreads();
 
-    // if (block_pos == 1 && warpId == 0 && laneId == 0) {
-    //   for(int i = 0; i < 64; i++) {
-    //     for(int j = 0; j < 64; j++) {
+    // if (block_pos == 2 && warpId == 0 && laneId == 0) {
+    //   for(int i = 20; i < 64; i+=32) {
+    //     for(int j = 32; j < 64; j++) {
     //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
     //       printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
     //     }
     //   }
     // }
 
-    int val[4];
-    int final_val;
-    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+(warpId/4)*16*64 + (warpId%4)*2*64 + laneId;
+    int val[8];
+    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x/32*64 + (threadIdx.x%32);
     int mask = 1;
     int bit0, bit1;
     unsigned r0, r1;
     int tmp0, tmp1;
 
-    int Output_row = warpId/4;
-    int Output_col = warpId%4;
+    int SHMEM_row = threadIdx.x/32;
+    // int SHMEM_col = threadIdx.x%32;
+    int Output_row = SHMEM_row/8;
+    int Output_col = SHMEM_row%8;
     int* dst_gmem_warp_stream_ptr;
 
+#pragma unroll
+    for(int i=0; i<4; i++) {
+      tmp0 = *(shmem_warp_stream_ptr+i*8*64);
+      tmp1 = *(shmem_warp_stream_ptr+32*64+i*8*64);
+      val[2*i] = tmp0+2*tmp1;
 
-    tmp0 = *shmem_warp_stream_ptr;
-    tmp1 = *(shmem_warp_stream_ptr+32*64);
-    val[0] = tmp0 + 2*tmp1;    
-    tmp0 = *(shmem_warp_stream_ptr+64);
-    tmp1 = *(shmem_warp_stream_ptr+64+32*64);
-    val[1] = tmp0 + 2*tmp1;
-    tmp0 = *(shmem_warp_stream_ptr+8*64);
-    tmp1 = *(shmem_warp_stream_ptr+8*64+32*64);
-    val[2] = tmp0 + 2*tmp1;
-    tmp0 = *(shmem_warp_stream_ptr+9*64);
-    tmp1 = *(shmem_warp_stream_ptr+9*64+32*64);
-    val[3] = tmp0 + 2*tmp1;
-    final_val = (val[0]+val[1]+val[2]+val[3])/4;
+      bit0 = val[2*i] & (mask << 0);
+      bit1 = (val[2*i] & (mask << 1)) >> 1;
+      r0 = __ballot_sync(0xFFFFFFFF, bit0);
+      r1 = __ballot_sync(0xFFFFFFFF, bit1);
+      if (laneId == 0) {
+        dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT/32 + block_j*COUT/32 + block_z/32 
+              + Output_row*Width*COUT/32 + Output_col*COUT/32;
+        *dst_gmem_warp_stream_ptr = __brev(r0);
+        *(dst_gmem_warp_stream_ptr+Width*Height*COUT/32) = __brev(r1);
+      }
 
-    bit0 = final_val & (mask << 0);
-    bit1 = (final_val & (mask << 1)) >> 1;
-    r0 = __ballot_sync(0xFFFFFFFF, bit0);
-    r1 = __ballot_sync(0xFFFFFFFF, bit1);
-    if (laneId == 0) {
-      printf("r0: %x, r1: %x\n", r0, r1);
-      dst_gmem_warp_stream_ptr = Output + block_i/2 * Width/2 * COUT/32 + block_j/2*COUT/32 + block_z/32 
-            + Output_row*Width/2*COUT/32 + Output_col*COUT/32;
-      *dst_gmem_warp_stream_ptr = r0;
-      *(dst_gmem_warp_stream_ptr+Width/2*Height/2*COUT/32) = r1;
+      tmp0 = *(shmem_warp_stream_ptr+32+i*8*64);
+      tmp1 = *(shmem_warp_stream_ptr+32+32*64+i*8*64);
+      val[2*i+1] = tmp0+2*tmp1;
+      bit0 = val[2*i+1] & (mask << 0);
+      bit1 = (val[2*i+1] & (mask << 1)) >> 1;
+      r0 = __ballot_sync(0xFFFFFFFF, bit0);
+      r1 = __ballot_sync(0xFFFFFFFF, bit1);
+      if (laneId == 0) {
+        dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT/32 + block_j*COUT/32 + block_z/32 
+              + Output_row*Width*COUT/32 + Output_col*COUT/32 + 1;
+        *dst_gmem_warp_stream_ptr = __brev(r0);
+        *(dst_gmem_warp_stream_ptr+Width*Height*COUT/32) = __brev(r1);
+      }      
+      // if(block_pos==2 && warpId == 4 && i==3) {
+      //   printf("laneId: %d, tmp0: %d, tmp1: %d, reduce_val: %d, bit0: %x, bit1: %d, r0: %x, reverse(r0): %x, r1: %x\n", laneId, tmp0, tmp1, val[2*i+1], bit0, bit1, r0, __brev(r0), r1);
+      // }
+
+
+      SHMEM_row += 8;
+      Output_row = SHMEM_row/8;
+      Output_col = SHMEM_row%8;
     }
 
-    tmp0 = *(shmem_warp_stream_ptr+32);
-    tmp1 = *(shmem_warp_stream_ptr+32+32*64);
-    val[0] = tmp0 + 2*tmp1;    
-    tmp0 = *(shmem_warp_stream_ptr+32+64);
-    tmp1 = *(shmem_warp_stream_ptr+32+64+32*64);
-    val[1] = tmp0 + 2*tmp1;
-    tmp0 = *(shmem_warp_stream_ptr+32+8*64);
-    tmp1 = *(shmem_warp_stream_ptr+32+8*64+32*64);
-    val[2] = tmp0 + 2*tmp1;
-    tmp0 = *(shmem_warp_stream_ptr+32+9*64);
-    tmp1 = *(shmem_warp_stream_ptr+32+9*64+32*64);
-    val[3] = tmp0 + 2*tmp1;
-    final_val = (val[0]+val[1]+val[2]+val[3])/4;
-
-    bit0 = final_val & (mask << 0);
-    bit1 = (final_val & (mask << 1)) >> 1;
-    r0 = __ballot_sync(0xFFFFFFFF, bit0);
-    r1 = __ballot_sync(0xFFFFFFFF, bit1);
-    if (laneId == 0) {
-      dst_gmem_warp_stream_ptr = Output + block_i/2 * Width/2 * COUT/32 + block_j/2*COUT/32 + block_z/32 
-            + Output_row*Width/2*COUT/32 + Output_col*COUT/32+1;
-      *dst_gmem_warp_stream_ptr = r0;
-      *(dst_gmem_warp_stream_ptr+Width/2*Height/2*COUT/32) = r1;
-    }
     __syncthreads();
   }
 }
@@ -340,8 +330,8 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
         for(int k = 0; k < CIN/32; k++) {
           // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = 0xFFFFFFFF;
           // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = i;
-          X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = j;
-          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = rand();
+          // X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = j;
+          X_int[b*(Height+2)*(Width+2)*CIN/32 + i*(Width+2)*CIN/32 + j*CIN/32 + k] = rand();
         }      
       }
     }  
@@ -350,9 +340,10 @@ void init_matrices(int4 *X, int4 *W, int Height, int Width, int CIN, int COUT, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < COUT; i++) {
       for(int j = 0; j < 9*CIN/32; j++) {
-        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
-        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
-        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = i;
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = 0xFFFFFFFF;
+        W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = rand();
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = i;
+        // W_int[b*COUT*9*CIN/32+i*9*CIN/32+j] = j;
       }
     }
   }
@@ -418,7 +409,6 @@ void compute_ref(int4 *W, int4 *X, int *ref_C, int Height, int Width, int CIN, i
   }
 }
 
-
 void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int Height, int Width, int CIN, int COUT, int W_BIT, int X_BIT, int OUT_BIT) {
   int *W_int = (int*) W;
   int *X_int = (int*) X;
@@ -453,8 +443,15 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int Height, int Width, int C
         }
         C_ref_before_decompose[m*Width*COUT + n*COUT + co]= tmp;
       }
-    }  
+    }
   }
+
+  // for(int co=32; co<64; co++) {
+  //   printf("co: %d, val: %d\n", co, C_ref_before_decompose[6*Width*COUT+ 4*COUT+co]);
+  // }
+
+  // a7107000 = 10100111000100000111000000000000
+  // 296df6b0 = 00101001011011011111011010110000
 
   for(int m=0; m<Height; m++) {
     for(int n=0; n<Width; n++) {
@@ -479,86 +476,6 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int Height, int Width, int C
     }
   }
 }
-
-
-void compute_ref_pack_pool(int4 *W, int4 *X, int *ref_C, int Height, int Width, int CIN, int COUT, int W_BIT, int X_BIT, int OUT_BIT) {
-  int *W_int = (int*) W;
-  int *X_int = (int*) X;
-  int C_ref_before_decompose[Height*Width*COUT];
-
-  for (int co=0; co<COUT; co++) {
-    for (int m = 0; m < Height; m++) {
-      for (int n = 0; n < Width; n++) {
-      int tmp = 0;
-      for(int xb=0; xb<X_BIT; xb++) {
-        int X_Multiplier = int_pow(2,xb);
-        for(int wb=0; wb<W_BIT; wb++) {
-          int W_Multiplier = int_pow(2,wb);
-          for(int i=0; i<3; i++) {
-            for(int j=0; j<3; j++) {
-              for(int k_tile=0; k_tile<CIN/32; k_tile++) {
-                  int x_int = X_int[xb*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
-                  int w_int = W_int[wb*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
-                  for(int k=0; k<32; k++) {
-                    int mask = 1;
-                    int x_val = ((mask << k) & x_int) >> k;
-                    int w_val = ((mask << k) & w_int) >> k;
-                    tmp += X_Multiplier * W_Multiplier * x_val * w_val;
-                  }
-                  // if(m==0 && n==1 && co == 0) {
-                  //   printf("xb: %d, i: %d, j: %d, k_tile: %d, x_int: %x, w_int: %x, tmp: %d, idx: %d\n", xb, i, j, k_tile, x_int, w_int, tmp, xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile);
-                  // }
-                }
-              }
-            }
-          }
-        }
-        C_ref_before_decompose[m*Width*COUT + n*COUT + co]= tmp;
-      }
-    }  
-  }
-
-  int C_ref_after_pool[Height/2*Width/2*COUT];
-  for(int m=0; m<Height/2; m++) {
-    for(int n=0; n<Width/2; n++) {
-      for(int co=0; co<COUT; co++) {
-        int val1 = C_ref_before_decompose[m*Width*COUT+n*COUT+co];
-        int val2 = C_ref_before_decompose[m*Width*COUT+(n+Width/2)*COUT+co];
-        int val3 = C_ref_before_decompose[(m+Width/2)*Width*COUT+n*COUT+co];
-        int val4 = C_ref_before_decompose[(m+Width/2)*Width*COUT+(n+Width/2)*COUT+co];
-        
-        C_ref_after_pool[m*Width/2*COUT+n*COUT+co] = (val1+val2+val3+val4)/4;
-      }
-    }
-  }
-
-
-  for(int m=0; m<Height/2; m++) {
-    for(int n=0; n<Width/2; n++) {
-      int val[OUT_BIT];
-      for(int b=0; b<OUT_BIT; b++) {
-        val[b] = 0;
-      }
-      for(int co_tile = 0; co_tile<COUT/32; co_tile++) {
-        for(int co=0; co<32; co++) {
-          int tmp = C_ref_after_pool[m*Width/2*COUT + n*COUT + co_tile*32+co];
-          tmp = (tmp - 0);  // Can be modified for other quantized parameters.
-          for(int b=0; b<OUT_BIT; b++) {
-            int mask = 1;
-            val[b] = val[b] << 1;
-            val[b] = val[b] | (((mask<<b) & tmp) >> b);
-          }
-        }
-        for(int b=0; b<OUT_BIT; b++) {
-          ref_C[b*Height/2*Width/2*COUT/32+m*Width/2*COUT/32+n*COUT/32 + co_tile] = val[b];
-        }
-      }
-    }
-  }
-}
-
-
-
 
 void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   printf("Checking computed result for correctness: \n");
@@ -612,6 +529,9 @@ void validate_results_pack(int *C, int* ref_C, int Height, int Width, int COUT, 
 }
 
 
+// 11100000100011100101
+// 10100111000100000111000000000000
+
 
 #define verify_output
 
@@ -623,13 +543,13 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 4;
-  int Width = 8;
+  int Height = 32;
+  int Width = 32;
   int X_BIT = 2;
   int W_BIT = 1;
 
   // for(int CIN = 128; CIN <= 2048; CIN+=128) {
-    int CIN = 128;
+    int CIN = 256;
     int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
@@ -655,12 +575,12 @@ int main(int argc, char **argv) {
   
     int SHMEM_SZ = 65536;
     checkCudaErrors(cudaFuncSetAttribute(
-      APConv_w1a2_pack_pool, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      APConv_w1a2_pack, cudaFuncAttributeMaxDynamicSharedMemorySize,
       SHMEM_SZ));
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1000;
+    int NUM_PROFILES = 1;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -669,7 +589,7 @@ int main(int argc, char **argv) {
             cudaEventCreate(&bmma_end);
             cudaEventRecord(bmma_start);
             checkKernelErrors(
-              (APConv_w1a2_pack_pool<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+              (APConv_w1a2_pack<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
                                     SHMEM_SZ>>>(W, X, Output, Height, Width, CIN, COUT)));
             cudaEventRecord(bmma_end);
             cudaEventSynchronize(bmma_end);
@@ -692,10 +612,10 @@ int main(int argc, char **argv) {
     int *C_ref = (int *)malloc(sizeof(int) * Height * Width * COUT);
 
     /* Copmpute reference matrix on CPU */
-    // compute_ref_pack_pool(W_h, X_h, C_ref, Height, Width, CIN, COUT, W_BIT, X_BIT, X_BIT);
+    compute_ref_pack(W_h, X_h, C_ref, Height, Width, CIN, COUT, W_BIT, X_BIT, X_BIT);
 
     /* validation results */
-    // validate_results_pack(Output_h, C_ref, Height/2, Width/2, COUT, X_BIT);
+    validate_results_pack(Output_h, C_ref, Height, Width, COUT, X_BIT);
     free(C_ref);
     free(X_h);
     free(W_h);
@@ -709,3 +629,8 @@ int main(int argc, char **argv) {
 
   return EXIT_SUCCESS;
 }
+
+
+
+// 21ece = 100001111011001110
+// ecf56f22 = 11101100111101010110111100100010

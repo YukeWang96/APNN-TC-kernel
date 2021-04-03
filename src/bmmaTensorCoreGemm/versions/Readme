@@ -308,3 +308,14 @@ Results validated.
 66:
 APMM-w1a2. With the same data layout as Conv. Added quantization and packing.
 Results validated.
+
+67:
+APConv-w1a2. Added quantization and packing.
+Results validated.
+
+68:
+APConv-w1a2. Added quantization and packing. Added 2x2 poolinh.
+Results NOT validated.
+
+
+
