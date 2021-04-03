@@ -301,20 +301,25 @@ Conv-w2a6. Tiling Size: 64x64.
 Conv-w2a6. Tiling Size: 128x128.
 
 65:
-APMM-w1a2. With the same data layout as Conv. 32-bit output.
+APMM-w1a2. With the same data layout as Conv. 32-bit output. 64x64.
 Results validated.
 
 66:
-APMM-w1a2. With the same data layout as Conv. Added quantization and packing.
+APMM-w1a2. With the same data layout as Conv. Added quantization and packing. 64x64.
 Results validated.
 
 67:
-APConv-w1a2. Added quantization and packing.
+APConv-w1a2. Added quantization and packing. 64x64.
 Results validated.
 
 68:
-APConv-w1a2. Added quantization and packing. Added 2x2 poolinh.
+APConv-w1a2. Added quantization and packing. Added 2x2 pooling. 64x64.
 Results validated.
 
+69:
+APConv-w2a2. Added quantization and packing. Added 2x2 pooling. 64x64.
+Results validated.
+
+70:
 
 
