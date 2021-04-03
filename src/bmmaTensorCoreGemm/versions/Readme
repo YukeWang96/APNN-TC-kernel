@@ -321,5 +321,7 @@ APConv-w2a2. Added quantization and packing. Added 2x2 pooling. 64x64.
 Results validated.
 
 70:
+APConv-w2a2. Added quantization and packing. 64x64.
+Results validated.
 
 
