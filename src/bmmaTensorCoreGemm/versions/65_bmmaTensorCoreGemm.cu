@@ -390,7 +390,7 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int M_GLOBAL, int N_GLOBAL, 
           int W_Multiplier = int_pow(2,wb);
           for(int k_tile=0; k_tile<K_GLOBAL/32; k_tile++) {
             int w_int = W_int[wb*M_GLOBAL*K_GLOBAL/32 + m*K_GLOBAL/32 + k_tile];
-            int x_int = X_int[wb*N_GLOBAL*K_GLOBAL/32 + n*K_GLOBAL/32 + k_tile];
+            int x_int = X_int[xb*N_GLOBAL*K_GLOBAL/32 + n*K_GLOBAL/32 + k_tile];
             for(int k=0; k<32; k++) {
               int mask = 1;
               int x_val = ((mask << k) & x_int) >> k;
@@ -430,8 +430,8 @@ void validate_results(int *C, int* ref_C, int M_, int N_) {
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for(int i = 0; i < 2; i++) {
-    for(int j = 0; j < 2; j++) {
+  for(int i = 0; i < M_; i++) {
+    for(int j = 0; j < N_; j++) {
       int idx = i*N_+j;
       double dst = fabs(C[idx] - ref_C[idx]);
       double abs = fabs(C[idx]) * fabs(ref_C[idx]);
@@ -485,10 +485,10 @@ int main(int argc, char **argv) {
   int X_BIT = 2;
   int W_BIT = 1;
 
-  // for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
-    int M_GLOBAL = 256;
+  for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
+    // int M_GLOBAL = 256;
     int N_GLOBAL = M_GLOBAL;
-    int K_GLOBAL = 256;
+    int K_GLOBAL = M_GLOBAL;
   
     int4 *X = NULL;
     int4 *W = NULL;
@@ -569,7 +569,7 @@ int main(int argc, char **argv) {
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
   
-  // }
+  }
 
   return EXIT_SUCCESS;
 }

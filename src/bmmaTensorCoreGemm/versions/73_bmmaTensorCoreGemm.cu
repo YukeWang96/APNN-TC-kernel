@@ -77,7 +77,7 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma::experimental;
 
-__global__ void apmm_w1a2_decompose(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
+__global__ void apmm_w2a2_decompose(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
   // GEMM configuration.
   int K_TILES = K_GLOBAL / 128;
 
@@ -110,7 +110,7 @@ __global__ void apmm_w1a2_decompose(const int4 *W, const int4 *X, int *D, int M_
 
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_GLOBAL/32) * 64;
+    const unsigned int block_tile_i = block_pos / (N_GLOBAL/32) * 32;
     const unsigned int block_tile_j = block_pos % (N_GLOBAL/32) * 32;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
@@ -129,16 +129,18 @@ __global__ void apmm_w1a2_decompose(const int4 *W, const int4 *X, int *D, int M_
     for(int i=0; i < WARP_COL_TILES; i++)
       for(int j = 0; j < WARP_ROW_TILES; j++)
         wmma::fill_fragment(c[i][j], 0);
-    
+
     // Select what warp copies what matrix to shared memory.
     // Warps 0-3 copy the A matrix, warps 4-7 copy the B matrix.
     const int4 *warp_ptr;
     if (warpId < 2) {
-      warp_ptr = &W[block_tile_i * ROW_BIT] + warpId * 32 * ROW_BIT;
-    } else if (warpId == 2) {
-      warp_ptr = &X[block_tile_j * ROW_BIT];
-    } else if (warpId == 3) {
-      warp_ptr = &X[block_tile_j * ROW_BIT + X_bit_offset];
+      warp_ptr = &W[block_tile_i * ROW_BIT] + warpId * 16 * ROW_BIT;
+    } else if (warpId < 4) {
+      warp_ptr = &W[block_tile_i * ROW_BIT + W_bit_offset] + (warpId-2) * 16 * ROW_BIT;
+    } else if (warpId < 6) {
+      warp_ptr = &X[block_tile_j * ROW_BIT] + (warpId -4) * 16 * ROW_BIT;
+    } else {
+      warp_ptr = &X[block_tile_j * ROW_BIT + X_bit_offset] + (warpId-6)*16*ROW_BIT;
     }
 
     // Go through the global K dimension by a fixed step at a time.
@@ -150,19 +152,20 @@ __global__ void apmm_w1a2_decompose(const int4 *W, const int4 *X, int *D, int M_
       // Copy slices of the A and B matrices to shared memory.
       // The first half of the warps in the CTA copy the A matrix, the rest copy
       // the B matrix.
-      size_t shmem_idx = warpId*32 + laneId;
+      int *shmem_ptr = (int*)shmem + warpId*16*4*(CHUNK_K+SKEW) + (laneId/4)*4*(CHUNK_K+SKEW) + laneId%4;
 
       // First half of the warp copies the first row / column of the matrix,
       // the second half of the warp copies the next.
       // int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128) +
       //                           (laneId / CHUNK_COPY_LINE_LANES) * (K_GLOBAL/128)) +
       //                  (laneId % CHUNK_COPY_LINE_LANES); // (K/128), since K=128 in bit. int4 is 128 bit.
-      int4 *lane_ptr = (int4*)(warp_ptr + laneId*ROW_BIT + tile_k); // (K/128), since K=128 in bit. int4 is 128 bit.
+      int *lane_ptr = (int*)warp_ptr + laneId/4*ROW_BIT*4 + laneId%4 + tile_k*4;
 
-      if (warpId < 4) {
-        // Copy 16 bytes at once in each lane.
-        shmem[shmem_idx][0] = *lane_ptr;
-      }
+      *shmem_ptr = *lane_ptr;
+
+      shmem_ptr += 8*4*(CHUNK_K+SKEW);
+      lane_ptr += 8*ROW_BIT*4;
+      *shmem_ptr = *lane_ptr;
 
       // U4 tmp_probe;
       // tmp_probe.vec = *lane_ptr;
@@ -170,10 +173,17 @@ __global__ void apmm_w1a2_decompose(const int4 *W, const int4 *X, int *D, int M_
 
       __syncthreads();
 
-      // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-      //   for(int i=0; i<128; i++) {
+      // if (warpId == 0 && laneId == 0  && block_tile_i == 64 && block_tile_j == 0) {
+      //   // for(int i=0; i<128; i++) {
+      //     int i = 12;
       //     printf("Load from GL. i: %d, val: %x %x %x %x \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
-      //   }
+      //     i = 44;
+      //     printf("Load from GL. i: %d, val: %x %x %x %x \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
+      //     i = 64;
+      //     printf("Load from GL. i: %d, val: %x %x %x %x \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
+      //     i = 96;
+      //     printf("Load from GL. i: %d, val: %x %x %x %x \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
+      //   // }
       // }
 
       // Compute a grid of C matrix tiles in each warp.
@@ -217,7 +227,7 @@ __global__ void apmm_w1a2_decompose(const int4 *W, const int4 *X, int *D, int M_
       }
       __syncthreads();
     }
-    
+
     // This pointer is used to access the C and D matrix tiles this warp computes.
     int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
                               (warpId / 2) * 64 * 16 +
@@ -235,44 +245,51 @@ __global__ void apmm_w1a2_decompose(const int4 *W, const int4 *X, int *D, int M_
 
     __syncthreads();
 
-    // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-    //   for(int i=62; i<64; i++) {
+    // if (warpId == 4 && laneId == 0 && block_tile_i == 64 && block_tile_j == 0) {
+    //   for(int i=12; i<13; i++) {
     //     for(int j=0; j<64; j++) {
     //       printf("i: %d, j: %d, val: %d\n", i, j, *((int*)&shmem[0][0]+i*64+j));
+    //     }
+    //     for(int j=0; j<64; j++) {
+    //       printf("i: %d, j: %d, val: %d\n", i+32, j, *((int*)&shmem[0][0]+(i+32)*64+j));
     //     }
     //   }
     // }
 
-    // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
-    // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
-    size_t idx = warpId * 64 + laneId;
 
-    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
+    int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId*64 + laneId;
+    int mask = 1;
+    int bit0, bit1;
+    unsigned r0, r1;
+    int tmp0, tmp1, tmp2, tmp3;
+    int val;
 
 #pragma unroll
-    for (int i = 0; i < 8; i++) {
-      int v0 = *(shmem_warp_stream_ptr);
-      int v1 = *(shmem_warp_stream_ptr+32);
-      int val = v0 + v1*2;
-      int mask = 1;
-      int bit0 = val & (mask << 0);
-      int bit1 = (val & (mask << 1)) >> 1;
-      unsigned r0 = __ballot_sync(0xFFFFFFFF, bit0);
-      unsigned r1 = __ballot_sync(0xFFFFFFFF, bit1);
+    for(int i=0; i<4; i++) {
+      tmp0 = *(shmem_warp_stream_ptr+i*8*64);
+      tmp1 = *(shmem_warp_stream_ptr+32+i*8*64);
+      tmp2 = *(shmem_warp_stream_ptr+32*64+i*8*64);
+      tmp3 = *(shmem_warp_stream_ptr+32+32*64+i*8*64);
+      val = tmp0 + 2*tmp1 + 2*tmp2 + 4*tmp3;
+      
+      // c4f07    =  0000 0000 0000 1100 0100 1111 0000 0111
+      // 8efa0    =  0000 0000 0000 1000 1110 1111 1010 0000
+      bit0 = val & (mask << 0);
+      bit1 = (val & (mask << 1)) >> 1;
+      r0 = __ballot_sync(0xFFFFFFFF, bit0);
+      r1 = __ballot_sync(0xFFFFFFFF, bit1);
+
+      // if (block_tile_i == 64 && block_tile_j == 0 && warpId == 4 & i == 1 && laneId == 0){
+      //   printf("laneId: %d, tmp0: %d, tmp1: %d, tmp2: %d, tmp3: %d, val: %d, r1: %x\n", laneId, tmp0, tmp1, tmp2, tmp3, val, __brev(r1));
+      // }
+
       if (laneId == 0) {
         size_t gmem_idx = block_tile_i*N_GLOBAL/32 + block_tile_j/32 + warpId*N_GLOBAL/32 + i*8*N_GLOBAL/32;
         D[gmem_idx] = __brev(r0);
         D[gmem_idx+M_GLOBAL*N_GLOBAL/32] = __brev(r1);
-        // printf("D[gmem_idx+M_GLOBAL*N_GLOBAL/32]: %x\n", D[gmem_idx+M_GLOBAL*N_GLOBAL/32]);
       }
-      // if (block_tile_i == 0 && block_tile_j == 0 && warpId == 0 & i == 0){
-      //   printf("laneId: %d, v0: %d, v1: %d, val: %d, r1: %x\n", laneId, v0, v1, val, __brev(r1));
-      // }
-
-      shmem_warp_stream_ptr += 8*64;
     }
     __syncthreads();
-
   }
 }
 
@@ -293,7 +310,7 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
     for(int i = 0; i < N_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
         // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
-        // X_int[i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
+        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = i*K_GLOBAL+j;
         X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }  
@@ -359,6 +376,9 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int M_GLOBAL, int N_GLOBAL, 
   for (int m = 0; m < M_GLOBAL; m++) {
     for (int n = 0; n < N_GLOBAL; n++) {
       int tmp = 0;
+
+      int term[4]; term[0] = 0; term[1] = 0; term[2] = 0; term[3] = 0; 
+
       for(int xb=0; xb<X_BIT; xb++) {
         int X_Multiplier = int_pow(2,xb);
         for(int wb=0; wb<W_BIT; wb++) {
@@ -371,17 +391,40 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int M_GLOBAL, int N_GLOBAL, 
               int x_val = ((mask << k) & x_int) >> k;
               int w_val = ((mask << k) & w_int) >> k;
               tmp += X_Multiplier * W_Multiplier * x_val * w_val;
+
+              if (xb == 0 && wb == 0) {
+                term[0] += x_val * w_val;
+              } else if (xb == 0 && wb == 1) {
+                term[1] += x_val * w_val;
+              } else if (xb == 1 && wb == 0) {
+                term[2] += x_val * w_val;
+              } else {
+                term[3] += x_val * w_val;
+              } 
+
             }
           }
         }
       }
       C_ref_before_decompose[m*N_GLOBAL+n]= tmp;
+      // if (m == 76 && n < 32) {
+      // if (m == 76 && n == 0) {
+      //   printf("n: %d, term[0]: %d, term[1]: %d, term[2]: %d, term[3]: %d, tmp: %d\n", n, term[0], term[1], term[2], term[3], tmp);
+      // }
     }
   }
 
-  // printf("w0: %x %x %x %x\n", W_int[0*M_GLOBAL*K_GLOBAL/32 + 8*K_GLOBAL/32 + 0], W_int[0*M_GLOBAL*K_GLOBAL/32 + 8*K_GLOBAL/32 + 1], W_int[0*M_GLOBAL*K_GLOBAL/32 + 8*K_GLOBAL/32 + 2], W_int[0*M_GLOBAL*K_GLOBAL/32 + 8*K_GLOBAL/32 + 3]);
-  // printf("x0: %x %x %x %x\n", X_int[0*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 0], X_int[0*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 1], X_int[0*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 2], X_int[0*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 3]);
-  // printf("x1: %x %x %x %x\n", X_int[1*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 0], X_int[1*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 1], X_int[1*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 2], X_int[1*N_GLOBAL*K_GLOBAL/32 + 2*K_GLOBAL/32 + 3]);
+
+  // 652d45c9 = 0110 0101 0010 1101 0100 0101 1100 1001
+  // for(int i=0; i<32; i++) {
+  //   printf("i=%d: %d\n", i, C_ref_before_decompose[76*N_GLOBAL+i]);
+  // }
+  
+  // printf("w0: %x %x %x %x\n", W_int[0*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 0], W_int[0*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 1], W_int[0*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 2], W_int[0*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 3]);
+  // printf("w1: %x %x %x %x\n", W_int[1*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 0], W_int[1*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 1], W_int[1*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 2], W_int[1*M_GLOBAL*K_GLOBAL/32 + 76*K_GLOBAL/32 + 3]);
+  // printf("x0: %d %d %d %d\n", X_int[wb*N_GLOBAL*K_GLOBAL/32 + n*K_GLOBAL/32 + k_tile])
+  // int w_int = W_int[wb*M_GLOBAL*K_GLOBAL/32 + m*K_GLOBAL/32 + k_tile];
+  // int x_int = X_int[wb*N_GLOBAL*K_GLOBAL/32 + n*K_GLOBAL/32 + k_tile];
 
 
   for(int m=0; m<M_GLOBAL; m++) {
@@ -402,7 +445,11 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int M_GLOBAL, int N_GLOBAL, 
       }
     }
   }
+  // printf("b=1, m=76, n_tile=0: %x\n", ref_C[1*M_GLOBAL*N_GLOBAL/32+76*N_GLOBAL/32+0]);
 }
+
+// 8efa0 =    0000 0000 0000 1000 1110 1111 1010 0000
+// 652d45c9 = 0110 0101 0010 1101 0100 0101 1100 1001
 
 void validate_results(int *C, int* ref_C, int M_, int N_) {
   // Assume K_GLOBAL and N_GLOBAL is a multiplier of 32.
@@ -442,7 +489,7 @@ void validate_results_pack(int *C, int* ref_C, int M_, int N_, int OUT_BIT) {
         double ref_err = dst / abs;
         if (ref_err > eps) {
           // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
-          printf("m: %d, n_tile: %d, b: %d, C: %d, ref_C: %d\n", m, n_tile, b, C[idx], ref_C[idx]);
+          printf("m: %d, n_tile: %d, b: %d, C: %x, ref_C: %x\n", m, n_tile, b, C[idx], ref_C[idx]);
           // printf("non equal\n");
           correct = false;
         }  
@@ -463,7 +510,7 @@ int main(int argc, char **argv) {
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
   int X_BIT = 2;
-  int W_BIT = 1;
+  int W_BIT = 2;
 
   for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
     // int M_GLOBAL = 128;
@@ -478,7 +525,7 @@ int main(int argc, char **argv) {
         cudaMalloc(reinterpret_cast<void **>(&W), sizeof(int4) * M_GLOBAL * (K_GLOBAL/128)* W_BIT));
     checkCudaErrors(
         cudaMalloc(reinterpret_cast<void **>(&X), sizeof(int4) * N_GLOBAL * (K_GLOBAL/128) * X_BIT));
-    checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&Output), sizeof(int) * M_GLOBAL * N_GLOBAL/32 * X_BIT));
+    checkCudaErrors(cudaMalloc(reinterpret_cast<void **>(&Output), sizeof(int) * M_GLOBAL * N_GLOBAL));
     
     
 #ifdef verify_output
@@ -488,7 +535,7 @@ int main(int argc, char **argv) {
   
     W_h = (int4 *)malloc(sizeof(int4) * M_GLOBAL * (K_GLOBAL/128) * W_BIT);
     X_h = (int4 *)malloc(sizeof(int4) * N_GLOBAL * (K_GLOBAL/128) * X_BIT);
-    Output_h = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL/32 * X_BIT);
+    Output_h = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL);
     printf("Preparing validation data for GPU...\n");
     init_matrices(W_h, X_h, M_GLOBAL, N_GLOBAL, K_GLOBAL, W_BIT, X_BIT);
     checkCudaErrors(cudaMemcpy(W, W_h, sizeof(int4) * M_GLOBAL * (K_GLOBAL/128) * W_BIT, cudaMemcpyHostToDevice));
@@ -497,12 +544,12 @@ int main(int argc, char **argv) {
   
     int SHMEM_SZ = 65536;
     checkCudaErrors(cudaFuncSetAttribute(
-      apmm_w1a2_decompose, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      apmm_w2a2_decompose, cudaFuncAttributeMaxDynamicSharedMemorySize,
       SHMEM_SZ));
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1;
+    int NUM_PROFILES = 1000;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -511,7 +558,7 @@ int main(int argc, char **argv) {
             cudaEventCreate(&bmma_end);
             cudaEventRecord(bmma_start);
             checkKernelErrors(
-              (apmm_w1a2_decompose<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+              (apmm_w2a2_decompose<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
                                     SHMEM_SZ>>>(W, X, Output, M_GLOBAL, N_GLOBAL, K_GLOBAL, W_BIT, X_BIT)));
                   cudaEventRecord(bmma_end);
             cudaEventSynchronize(bmma_end);
@@ -523,14 +570,14 @@ int main(int argc, char **argv) {
   
     bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
 
-    printf("M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, W_BIT: %d, X_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, W_BIT, X_BIT);
+    printf("V73, 64x64. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
     printf("Time: %f ms\n", bmma_ms_avg);  
     printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
   
   
 #ifdef verify_output
   printf("Validating results...\n");
-  checkCudaErrors(cudaMemcpy(Output_h, Output, sizeof(int) * M_GLOBAL * N_GLOBAL/32*X_BIT, cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaMemcpy(Output_h, Output, sizeof(int) * M_GLOBAL * N_GLOBAL, cudaMemcpyDeviceToHost));
 
   int *Output_ref = (int *)malloc(sizeof(int) * M_GLOBAL * N_GLOBAL/32 * X_BIT);
 

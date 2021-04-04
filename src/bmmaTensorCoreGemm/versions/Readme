@@ -335,5 +335,9 @@ This version is different from v65 in terms of GL loading. Speed is slightly fas
 APMM-w2a2. With the same data layout as Conv. 32-bit output. 64x64.
 Results validated. Support CHUNK_K = 1.
 
+73:
+APMM-w2a2. With the same data layout as Conv. Added quantization and packing. 64x64.
+Results validated. Support CHUNK_K = 1.
+
 
 
