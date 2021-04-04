@@ -77,7 +77,7 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma::experimental;
 
-__global__ void apmm_w2a2(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
+__global__ void apmm_w1a2(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
   // GEMM configuration.
   int K_TILES = K_GLOBAL / 128;
 
@@ -110,7 +110,7 @@ __global__ void apmm_w2a2(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
 
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_GLOBAL/32) * 32;
+    const unsigned int block_tile_i = block_pos / (N_GLOBAL/32) * 64;
     const unsigned int block_tile_j = block_pos % (N_GLOBAL/32) * 32;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
@@ -133,10 +133,8 @@ __global__ void apmm_w2a2(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
     // Select what warp copies what matrix to shared memory.
     // Warps 0-3 copy the A matrix, warps 4-7 copy the B matrix.
     const int4 *warp_ptr;
-    if (warpId < 2) {
+    if (warpId < 4) {
       warp_ptr = &W[block_tile_i * ROW_BIT] + warpId * 16 * ROW_BIT;
-    } else if (warpId < 4) {
-      warp_ptr = &W[block_tile_i * ROW_BIT + W_bit_offset] + (warpId-2) * 16 * ROW_BIT;
     } else if (warpId < 6) {
       warp_ptr = &X[block_tile_j * ROW_BIT] + (warpId -4) * 16 * ROW_BIT;
     } else {
@@ -248,52 +246,57 @@ __global__ void apmm_w2a2(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
 
     // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
     // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
-    size_t idx = threadIdx.x/8 * 64 + threadIdx.x%8*4;
+    size_t idx = warpId * 8 * 64 + (laneId%8) * 4 + (laneId/8)*2*64;
+
     int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
 
 
 
     U4 tmp0;
     U4 tmp1;
-    U4 tmp2;
-    U4 tmp3;
-    U4 val;
+    U4 val[2];
 
-    tmp0.vec = *((int4*)shmem_warp_stream_ptr);
-    tmp1.vec = *((int4*)shmem_warp_stream_ptr+8);
-    tmp2.vec = *((int4*)shmem_warp_stream_ptr+32*16);
-    tmp3.vec = *((int4*)shmem_warp_stream_ptr+8+32*16);
+#pragma unroll
+    for (int i = 0; i < 2; i++) {
+      tmp0.vec = *((int4*)shmem_warp_stream_ptr);
+      tmp1.vec = *((int4*)shmem_warp_stream_ptr+8);
 
-    // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-    //   for(int i = 0; i < 4; i++) {
-    //     printf("tmp0.a[%d], %d ", 3-i, tmp0.a[3-i]);
-    //   }
-    //   printf("\n");
-    //   for(int i = 0; i < 4; i++) {
-    //     printf("tmp1.a[%d], %d ", 3-i, tmp1.a[3-i]);
-    //   }
-    //   printf("\n");
-    // }
+      // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+      //   for(int i = 0; i < 4; i++) {
+      //     printf("tmp0.a[%d], %d ", 3-i, tmp0.a[3-i]);
+      //   }
+      //   printf("\n");
+      //   for(int i = 0; i < 4; i++) {
+      //     printf("tmp1.a[%d], %d ", 3-i, tmp1.a[3-i]);
+      //   }
+      //   printf("\n");
+      // }
+  
+      val[i].a[0] = tmp0.a[0] + 2*tmp1.a[0];
+      val[i].a[1] = tmp0.a[1] + 2*tmp1.a[1];
+      val[i].a[2] = tmp0.a[2] + 2*tmp1.a[2];
+      val[i].a[3] = tmp0.a[3] + 2*tmp1.a[3];
+      // if (warpId == 7) {
+      //   printf("warpId: %d, laneId: %d, idx: %d, val[%d].a: %d, %d, %d, %d, tmp0: %d %d %d %d, tmp1: %d %d %d %d \n", warpId, laneId, idx, i, val[i].a[0], val[i].a[1], val[i].a[2], val[i].a[3], tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3], tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3] );
+      // }
+      shmem_warp_stream_ptr += 64;
+    }
 
-    val.a[0] = tmp0.a[0] + 2*tmp1.a[0] + 2*tmp2.a[0] + 4*tmp3.a[0];
-    val.a[1] = tmp0.a[1] + 2*tmp1.a[1] + 2*tmp2.a[1] + 4*tmp3.a[1];
-    val.a[2] = tmp0.a[2] + 2*tmp1.a[2] + 2*tmp2.a[2] + 4*tmp3.a[2];
-    val.a[3] = tmp0.a[3] + 2*tmp1.a[3] + 2*tmp2.a[3] + 4*tmp3.a[3];
-    // if (warpId == 7) {
-    //   printf("warpId: %d, laneId: %d, idx: %d, val[%d].a: %d, %d, %d, %d, tmp0: %d %d %d %d, tmp1: %d %d %d %d \n", warpId, laneId, idx, i, val[i].a[0], val[i].a[1], val[i].a[2], val[i].a[3], tmp0.a[0], tmp0.a[1], tmp0.a[2], tmp0.a[3], tmp1.a[0], tmp1.a[1], tmp1.a[2], tmp1.a[3] );
-    // }
     __syncthreads();
 
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    size_t gmem_idx = block_tile_i*N_GLOBAL + block_tile_j + (threadIdx.x/8)*N_GLOBAL + (threadIdx.x%8)*4;
+    size_t gmem_idx = block_tile_i*N_GLOBAL + block_tile_j + warpId*8*N_GLOBAL + (laneId%8)*4 + (laneId/8)*2*N_GLOBAL;
     // printf("block_tile_i: %d, block_tile_j: %d, warpId: %d, laneId: %d, gmem_idx: %d\n", block_tile_i, block_tile_j, warpId, laneId, gmem_idx);
 
 
     // Now that shared memory contains all the D tiles, stream them to global memory.
     int *dst_gmem_warp_stream_ptr = &D[gmem_idx];
     
-    *((int4 *)(dst_gmem_warp_stream_ptr)) = val.vec;
+  #pragma unroll
+    for (int i = 0; i < 2; i++) {
+      *((int4 *)(dst_gmem_warp_stream_ptr + i*N_GLOBAL)) = val[i].vec;
+    }
 
     __syncthreads();
   }
@@ -471,7 +474,7 @@ void validate_results_pack(int *C, int* ref_C, int M_, int N_, int OUT_BIT) {
 }
 
 
-// #define verify_output
+#define verify_output
 
 int main(int argc, char **argv) {
 
@@ -481,7 +484,7 @@ int main(int argc, char **argv) {
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
   int X_BIT = 2;
-  int W_BIT = 2;
+  int W_BIT = 1;
 
   for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
     // int M_GLOBAL = 256;
@@ -515,7 +518,7 @@ int main(int argc, char **argv) {
   
     int SHMEM_SZ = 65536;
     checkCudaErrors(cudaFuncSetAttribute(
-      apmm_w2a2, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      apmm_w1a2, cudaFuncAttributeMaxDynamicSharedMemorySize,
       SHMEM_SZ));
   
     // Run ours NUM_PROFILES times and record time.
@@ -529,7 +532,7 @@ int main(int argc, char **argv) {
             cudaEventCreate(&bmma_end);
             cudaEventRecord(bmma_start);
             checkKernelErrors(
-              (apmm_w2a2<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+              (apmm_w1a2<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
                                     SHMEM_SZ>>>(W, X, Output, M_GLOBAL, N_GLOBAL, K_GLOBAL, W_BIT, X_BIT)));
                   cudaEventRecord(bmma_end);
             cudaEventSynchronize(bmma_end);
@@ -541,7 +544,7 @@ int main(int argc, char **argv) {
   
     bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
 
-    printf("V72, 64x64. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
+    printf("V30, 64x64. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
     printf("Time: %f ms\n", bmma_ms_avg);  
     printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
   

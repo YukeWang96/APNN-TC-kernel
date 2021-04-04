@@ -214,6 +214,8 @@ Results are not validated.
 APMM-W6-A2. Tiling Size: 128x128
 Results are not validated.
 
+*************************APMM code before this line does node support CHUNK_K = 1!!!!!  **********************************
+
 44:
 Conv-w2-a2. When reading image patch, use 32bit instead of 128bit. 还加了skew, 去除bank conflict.
 32bit和128bit没有performance区别。skew可以从0.019ms快到0.0181ms.
@@ -323,5 +325,15 @@ Results validated.
 70:
 APConv-w2a2. Added quantization and packing. 64x64.
 Results validated.
+
+71:
+APMM-w1a2. With the same data layout as Conv. 32-bit output. 64x64.
+Results validated.  Support CHUNK_K = 1.
+This version is different from v65 in terms of GL loading. Speed is slightly faster than v65.
+
+72:
+APMM-w2a2. With the same data layout as Conv. 32-bit output. 64x64.
+Results validated. Support CHUNK_K = 1.
+
 
 

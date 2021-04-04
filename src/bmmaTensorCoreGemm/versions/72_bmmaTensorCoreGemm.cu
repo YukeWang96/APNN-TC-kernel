@@ -471,7 +471,7 @@ void validate_results_pack(int *C, int* ref_C, int M_, int N_, int OUT_BIT) {
 }
 
 
-// #define verify_output
+#define verify_output
 
 int main(int argc, char **argv) {
 
