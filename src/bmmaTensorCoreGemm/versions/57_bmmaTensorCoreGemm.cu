@@ -412,15 +412,169 @@ void compute_ref(int4 *X, int4 *W, int *ref_C, int Height, int Width, int CIN, i
   }
 }
 
+void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int Height, int Width, int CIN, int COUT, int W_BIT, int X_BIT, int OUT_BIT) {
+  int *W_int = (int*) W;
+  int *X_int = (int*) X;
+  int C_ref_before_decompose[Height*Width*COUT];
+
+  for (int co=0; co<COUT; co++) {
+    for (int m = 0; m < Height; m++) {
+      for (int n = 0; n < Width; n++) {
+      int tmp = 0;
+      for(int xb=0; xb<X_BIT; xb++) {
+        int X_Multiplier = int_pow(2,xb);
+        for(int wb=0; wb<W_BIT; wb++) {
+          int W_Multiplier = int_pow(2,wb);
+          for(int i=0; i<3; i++) {
+            for(int j=0; j<3; j++) {
+              for(int k_tile=0; k_tile<CIN/32; k_tile++) {
+                  int x_int = X_int[xb*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
+                  int w_int = W_int[wb*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
+                  for(int k=0; k<32; k++) {
+                    int mask = 1;
+                    int x_val = ((mask << k) & x_int) >> k;
+                    int w_val = ((mask << k) & w_int) >> k;
+                    tmp += X_Multiplier * W_Multiplier * x_val * w_val;
+                  }
+                  // if(m==0 && n==1 && co == 0) {
+                  //   printf("xb: %d, i: %d, j: %d, k_tile: %d, x_int: %x, w_int: %x, tmp: %d, idx: %d\n", xb, i, j, k_tile, x_int, w_int, tmp, xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile);
+                  // }
+                }
+              }
+            }
+          }
+        }
+        C_ref_before_decompose[m*Width*COUT + n*COUT + co]= tmp;
+      }
+    }  
+  }
+
+  for(int m=0; m<Height; m++) {
+    for(int n=0; n<Width; n++) {
+      int val[OUT_BIT];
+      for(int b=0; b<OUT_BIT; b++) {
+        val[b] = 0;
+      }
+      for(int co_tile = 0; co_tile<COUT/32; co_tile++) {
+        for(int co=0; co<32; co++) {
+          int tmp = C_ref_before_decompose[m*Width*COUT + n*COUT + co_tile*32+co];
+          tmp = (tmp - 0);  // Can be modified for other quantized parameters.
+          for(int b=0; b<OUT_BIT; b++) {
+            int mask = 1;
+            val[b] = val[b] << 1;
+            val[b] = val[b] | (((mask<<b) & tmp) >> b);
+          }
+        }
+        for(int b=0; b<OUT_BIT; b++) {
+          ref_C[b*Height*Width*COUT/32+m*Width*COUT/32+n*COUT/32 + co_tile] = val[b];
+        }
+      }
+    }
+  }
+}
+
+
+void compute_ref_pack_pool(int4 *W, int4 *X, int *ref_C, int Height, int Width, int CIN, int COUT, int W_BIT, int X_BIT, int OUT_BIT) {
+  int *W_int = (int*) W;
+  int *X_int = (int*) X;
+  int C_ref_before_decompose[Height*Width*COUT];
+
+  for (int co=0; co<COUT; co++) {
+    for (int m = 0; m < Height; m++) {
+      for (int n = 0; n < Width; n++) {
+      int tmp = 0;
+      for(int xb=0; xb<X_BIT; xb++) {
+        int X_Multiplier = int_pow(2,xb);
+        for(int wb=0; wb<W_BIT; wb++) {
+          int W_Multiplier = int_pow(2,wb);
+          for(int i=0; i<3; i++) {
+            for(int j=0; j<3; j++) {
+              for(int k_tile=0; k_tile<CIN/32; k_tile++) {
+                  int x_int = X_int[xb*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
+                  int w_int = W_int[wb*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
+                  for(int k=0; k<32; k++) {
+                    int mask = 1;
+                    int x_val = ((mask << k) & x_int) >> k;
+                    int w_val = ((mask << k) & w_int) >> k;
+                    tmp += X_Multiplier * W_Multiplier * x_val * w_val;
+                  }
+                  // if(m==0 && n==1 && co == 0) {
+                  //   printf("xb: %d, i: %d, j: %d, k_tile: %d, x_int: %x, w_int: %x, tmp: %d, idx: %d\n", xb, i, j, k_tile, x_int, w_int, tmp, xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile);
+                  // }
+                }
+              }
+            }
+          }
+        }
+        C_ref_before_decompose[m*Width*COUT + n*COUT + co]= tmp;
+      }
+    }  
+  }
+
+  int size_after_pool = (int)((float)Height /2 * (float)Width/2 * COUT);
+  // printf("Height: %d, Width: %d, COUT: %d, size_after_pool: %d\n", Height, Width, COUT, (int)size_after_pool);
+
+  int half_width = Width/2;
+  int half_height = Height/2;
+
+  int C_ref_after_pool[size_after_pool];
+  for(int m=0; m<half_height; m++) {
+    for(int n=0; n<half_width; n++) {
+      for(int co=0; co<COUT; co++) {
+        int val1 = C_ref_before_decompose[2*m*Width*COUT+2*n*COUT+co];
+        int val2 = C_ref_before_decompose[2*m*Width*COUT+(2*n+1)*COUT+co];
+        int val3 = C_ref_before_decompose[(2*m+1)*Width*COUT+2*n*COUT+co];
+        int val4 = C_ref_before_decompose[(2*m+1)*Width*COUT+(2*n+1)*COUT+co];
+        
+        C_ref_after_pool[m*half_width*COUT+n*COUT+co] = (val1+val2+val3+val4)/4;
+      }
+    }
+  }
+
+  // for(int co=32; co<64; co++) {
+  //   int val1 = C_ref_before_decompose[12*Width*COUT+ 8*COUT+co];
+  //   int val2 = C_ref_before_decompose[12*Width*COUT+ 9*COUT+co];
+  //   int val3 = C_ref_before_decompose[13*Width*COUT+ 8*COUT+co];
+  //   int val4 = C_ref_before_decompose[13*Width*COUT+ 9*COUT+co];
+  //   int val = C_ref_after_pool[6*half_width*COUT+4*COUT+co];
+  //   printf("co: %d, val1: %d, val2: %d, val3: %d, val4: %d, val: %x\n", co, val1, val2, val3, val4, val);
+  // }
+
+
+
+
+  for(int m=0; m<half_height; m++) {
+    for(int n=0; n<half_width; n++) {
+      int val[OUT_BIT];
+      for(int b=0; b<OUT_BIT; b++) {
+        val[b] = 0;
+      }
+      for(int co_tile = 0; co_tile<COUT/32; co_tile++) {
+        for(int co=0; co<32; co++) {
+          int tmp = C_ref_after_pool[m*half_width*COUT + n*COUT + co_tile*32+co];
+          tmp = (tmp - 0);  // Can be modified for other quantized parameters.
+          for(int b=0; b<OUT_BIT; b++) {
+            int mask = 1;
+            val[b] = val[b] << 1;
+            val[b] = val[b] | (((mask<<b) & tmp) >> b);
+          }
+        }
+        for(int b=0; b<OUT_BIT; b++) {
+          ref_C[b*half_height*half_width*COUT/32+m*half_width*COUT/32+n*COUT/32 + co_tile] = val[b];
+        }
+      }
+    }
+  }
+}
 
 void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   printf("Checking computed result for correctness: \n");
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for(int i = 0; i<Height; i++) {
-    for(int j = 0; j<Width; j++) {
-      for(int co=0; co<2; co++) {
+  for(int i = 0; i < Height; i++) {
+    for(int j = 0; j < Width; j++) {
+      for(int co=0; co<COUT; co++) {
         int idx = i*Width*COUT+j*COUT+co;
         double dst = fabs(C[idx] - ref_C[idx]);
         double abs = fabs(C[idx]) * fabs(ref_C[idx]);
@@ -437,7 +591,37 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
-// #define verify_output
+
+
+void validate_results_pack(int *C, int* ref_C, int Height, int Width, int COUT, int OUT_BIT) {
+  printf("Checking computed result for correctness: \n");
+  bool correct = true;
+  double eps = 1.e-6;  // machine zero
+
+  for(int i = 0; i<Height; i++) {
+    for(int j = 0; j<Width; j++) {
+      for(int co=0; co<COUT/32; co++) {
+        for(int b=0; b<OUT_BIT; b++) {
+          int idx = b*Height*Width*COUT/32 + i*Width*COUT/32+j*COUT/32+co;
+          double dst = fabs(C[idx] - ref_C[idx]);
+          double abs = fabs(C[idx]) * fabs(ref_C[idx]);
+          double ref_err = dst / abs;
+          if (ref_err > eps) {
+            // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
+            printf("xb: %d, i: %d, j: %d, co: %d, C: %x, ref_C: %x\n", b, i, j, co, C[idx], ref_C[idx]);
+            // printf("non equal\n");
+            correct = false;
+          }
+        }
+      }
+    }
+  }
+  printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
+}
+
+
+
+#define verify_output
 
 int main(int argc, char **argv) {
   printf("Initializing...\n");
@@ -507,33 +691,30 @@ int main(int argc, char **argv) {
     printf("H: %d, W: %d, CIN: %d, COUT: %d, W_BIT: %d, X_BIT: %d\n", Height, Width, CIN, COUT, W_BIT, X_BIT);
     printf("Time: %f ms\n", bmma_ms_avg);
   
-    printf("TOPS: %.2f\n\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
-  
-  
-
-  }
-
+    printf("TOPS: %.2f\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
 
 
 #ifdef verify_output
-  printf("Validating results...\n");
-  checkCudaErrors(cudaMemcpy(Output_h, Output, sizeof(int) * Height * Width * COUT, cudaMemcpyDeviceToHost));
+    printf("Validating results...\n");
+    checkCudaErrors(cudaMemcpy(Output_h, Output, sizeof(int) * Height * Width * COUT, cudaMemcpyDeviceToHost));
 
-  int *C_ref = (int *)malloc(sizeof(int) * Height * Width * COUT);
+    int *C_ref = (int *)malloc(sizeof(int) * Height * Width * COUT * X_BIT);
 
-  /* Copmpute reference matrix on CPU */
-  compute_ref(X_h, W_h, C_ref, Height, Width, CIN, COUT, X_BIT, W_BIT);
+    /* Copmpute reference matrix on CPU */
+    compute_ref(X_h, W_h, C_ref, Height, Width, CIN, COUT, X_BIT, W_BIT);
 
-  /* validation results */
-  validate_results(Output_h, C_ref, Height, Width, COUT);
+    /* validation results */
+    validate_results(Output_h, C_ref, Height, Width, COUT);
+
+    free(C_ref);
+    free(X_h);
+    free(W_h);
+    free(Output_h);
 #endif
 
-  // free(A_h);
-  // free(B_h);
-  // free(C_h);
-  // checkCudaErrors(cudaFree(reinterpret_cast<void *>(A)));
-  // checkCudaErrors(cudaFree(reinterpret_cast<void *>(B)));
-  // checkCudaErrors(cudaFree(reinterpret_cast<void *>(C)));
-
+    checkCudaErrors(cudaFree(reinterpret_cast<void *>(W)));
+    checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
+    checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
+  }
   return EXIT_SUCCESS;
 }

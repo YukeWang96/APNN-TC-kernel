@@ -55,11 +55,10 @@ typedef union {
 
 // Assume that Kernel size is 3x3.
 // Assume CIN is 128.
-__global__ void APConv_w2a2_pack(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
+__global__ void APConv_w2a8_pack(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
   // GEMM Configuration
   int X_bit_offset = (Height+2) * (Width+2) * CIN/128;
-  int W_bix_offset = 9*CIN*COUT/128;
-  int BIT = 2;
+  int W_bit_offset = 9*CIN/128*COUT;
   int X_ROW_BIT = (Width+2)*CIN/128;
   int W_ROW_BIT = 9*(CIN/128);
 
@@ -84,10 +83,9 @@ __global__ void APConv_w2a2_pack(const int4 *W, const int4 *X, int *Output, int 
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_i = (block_pos/(COUT/32)) / (Width/8) * 4;
-    const unsigned int block_j = (block_pos/(COUT/32)) % (Width/8) * 8;
+    const unsigned int block_i = (block_pos/(COUT/32)) / (Width/4) * 2;
+    const unsigned int block_j = (block_pos/(COUT/32)) % (Width/4) * 4;
     const unsigned int block_z = block_pos % (COUT/32) * 32;
-
     if (block_i >= Height) {
       break;
     }
@@ -105,10 +103,10 @@ __global__ void APConv_w2a2_pack(const int4 *W, const int4 *X, int *Output, int 
     for (int tile_k = 0; tile_k+CHUNK_K < 9*CIN/128; tile_k += CHUNK_K) {
 
       int SHMEM_i = threadIdx.x/4;
-      int bit_flag = SHMEM_i / (64/BIT); // bit_flag = 0/1, indicates 
-      int SHMEM_offset = SHMEM_i % (64/BIT);
-      int row = SHMEM_offset / 8;
-      int col = SHMEM_offset % 8;
+      int bit_flag = SHMEM_i / 8; // bit_flag = 0/1, indicates 
+      int SHMEM_offset = SHMEM_i % 8;
+      int row = SHMEM_offset / 4;
+      int col = SHMEM_offset % 4;
       int t = threadIdx.x % 4;
 
       int sub_row = (tile_k+t)/(3*CIN/128);
@@ -117,27 +115,42 @@ __global__ void APConv_w2a2_pack(const int4 *W, const int4 *X, int *Output, int 
 
       int GL_idx = image_starting_idx + bit_flag*X_bit_offset + row*X_ROW_BIT + col*CIN/128 + sub_row*X_ROW_BIT + sub_col;
 
-      // if (block_pos == 0 && tile_k ==0 && SHMEM_i == 1) {
+      // if (block_pos == 3 && tile_k ==0 && SHMEM_i == 1) {
       //   printf("tile_k: %d, block_i: %d, block_j: %d, row: %d, col: %d, sub_row: %d, sub_col: %d, GL_idx: %d\n", tile_k, block_i, block_j, row, col, sub_row, sub_col, GL_idx);
       //   printf("X[17]: %x %x %x %x\n", *((int*)X+ 4*17), *((int*)X+ 4*17+1), *((int*)X+ 4*17+2), *((int*)X+ 4*17+3));
       // }
-  
+
 
       shmem[SHMEM_i][t] = X[GL_idx];
 
       SHMEM_i += 64;
-      int weight_load_idx = bit_flag * W_bix_offset + (block_z + SHMEM_offset) * W_ROW_BIT + tile_k + t;
+
+      bit_flag = threadIdx.x/4 / 32;
+      SHMEM_offset = SHMEM_i % 32;
+
+      int weight_load_idx = bit_flag * W_bit_offset + (block_z + SHMEM_offset) * W_ROW_BIT + tile_k + t;
       shmem[SHMEM_i][t] = W[weight_load_idx];
 
       __syncthreads();
 
-      // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-      //   for(int i = 64; i < 65; i++) {
-      //     for(int j = 0; j < 16; j++) {
-      //       int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
-      //       printf("tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
-      //     }
+      // if (block_pos == 3 && warpId == 0 && laneId == 0) {
+      //   int i = 5;
+      //   for(int j = 0; j < 16; j++) {
+      //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
       //   }
+      //   i=64;
+      //   for(int j = 0; j < 16; j++) {
+      //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
+      //   }
+
+      //   // for(int i = 0; i < 128; i++) {
+      //   //   for(int j = 0; j < 16; j++) {
+      //   //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //   //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
+      //   //   }
+      //   // }
       // }
   
 
@@ -190,10 +203,10 @@ __global__ void APConv_w2a2_pack(const int4 *W, const int4 *X, int *Output, int 
 #pragma unroll
     for (int tile_k = int(9*CIN/128/CHUNK_K)*CHUNK_K; tile_k < 9*CIN/128; tile_k++) {
       int SHMEM_i = threadIdx.x/4;
-      int bit_flag = SHMEM_i / (64/BIT);
-      int SHMEM_offset = SHMEM_i % (64/BIT);
-      int row = SHMEM_offset / 8;
-      int col = SHMEM_offset % 8;
+      int bit_flag = SHMEM_i / 8;
+      int SHMEM_offset = SHMEM_i % 8;
+      int row = SHMEM_offset / 4;
+      int col = SHMEM_offset % 4;
       int t = threadIdx.x % 4;
 
       int sub_row = (tile_k)/(3*CIN/128);
@@ -203,11 +216,37 @@ __global__ void APConv_w2a2_pack(const int4 *W, const int4 *X, int *Output, int 
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&X[GL_idx] + t);
 
       SHMEM_i += 64;
-      int weight_load_idx = bit_flag * W_bix_offset + (block_z + SHMEM_offset) * W_ROW_BIT + tile_k;
+      bit_flag = threadIdx.x/4 / 32;
+      SHMEM_offset = SHMEM_i % 32;
+
+      int weight_load_idx = bit_flag * W_bit_offset + (block_z + SHMEM_offset) * W_ROW_BIT + tile_k;
+
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&W[weight_load_idx] + t);
 
       __syncthreads();
 
+      // if (block_pos == 3 && warpId == 0 && laneId == 0) {
+      //   int i = 5;
+      //   for(int j = 0; j < 4; j++) {
+      //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
+      //   }
+      //   i=64;
+      //   for(int j = 0; j < 4; j++) {
+      //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
+      //   }
+
+
+
+      //   // for(int i = 0; i < 128; i++) {
+      //   //   for(int j = 0; j < 16; j++) {
+      //   //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //   //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
+      //   //   }
+      //   // }
+      // }
+  
       // Compute a grid of C matrix tiles in each warp.
 
 #pragma unroll
@@ -258,107 +297,80 @@ __global__ void APConv_w2a2_pack(const int4 *W, const int4 *X, int *Output, int 
 
     __syncthreads();
 
-    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-    //   for(int i = 31; i < 34; i++) {
-    //     for(int j = 0; j < 64; j++) {
-    //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
-    //       printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
+    // printf("%d\n\n\n\n", *((int*)&shmem[0][0] + 5*64 + 0));
+
+    // if (block_pos == 3 && warpId == 0 && laneId == 0) {
+    //   int i = 5;
+    //   int v[16];
+    //   for(int j=0; j<32; j++) {
+
+    //     for (int k=0; k<8; k++) {
+    //       v[2*k] = *((int*)&shmem[0][0] + 5*64 + j + k*8*64);
+    //       v[2*k+1] = *((int*)&shmem[0][0] + 5*64 + j + k*8*64 + 32);
     //     }
+        
+    //     int multiplier = 1;
+    //     int val = 0;
+    //     for(int k=0; k<8; k++) {
+    //       val += v[2*k]*multiplier;
+    //       multiplier*=2;
+    //       val += v[2*k+1]*multiplier;
+    //     }
+
+    //     printf("i: %d, j: %d, v[0]: %d, v[1]: %d, v[2]: %d, v[3]: %d, v[4]: %d, v[5]: %d, v[6]: %d, v[7]: %d, v[8]: %d, v[9]: %d, v[10]: %d, v[11]: %d, v[12]: %d, v[13]: %d, v[14]: %d, v[15]: %d, val: %x\n", i, j, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], val);
     //   }
+
+    //   // for(int i = 5; i < 64; i++) {
+    //   //   for(int j = 0; j < 64; j++) {
+    //   //     int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
+    //   //     printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
+    //   //   }
+    //   // }
     // }
+    // 18a4a69f = 0001 1000 1010 0100 1010 0110 1001 1111
 
-    int val[4];
-    int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + (warpId/4)*16*64 + (warpId%4)*2*64 + laneId;
+
+    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x/32*64 + threadIdx.x%32;
+    int tmp[16];
+    int val = 0;
+    int multiplier = 1;
+
+#pragma unroll
+    for (int i=0; i<8; i++) {
+      tmp[2*i] = *(shmem_warp_stream_ptr+8*i*64);
+      tmp[2*i+1] = *(shmem_warp_stream_ptr+8*i*64+32);
+    }
+
+#pragma unroll
+    for(int i=0; i<8; i++) {
+      val += tmp[2*i]*multiplier;
+      multiplier*=2;
+      val += tmp[2*i+1]*multiplier;
+    }
+
     int mask = 1;
-    int bit0, bit1;
-    unsigned r0, r1;
-    int tmp0, tmp1, tmp2, tmp3;
+    int bit;
+    unsigned r;
+    int SHMEM_row = threadIdx.x/32;
+    // int SHMEM_col = threadIdx.x%32;
+    int Output_row = SHMEM_row/4;
+    int Output_col = SHMEM_row%4;
+    int* dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT/32 + block_j*COUT/32 + block_z/32 
+    + Output_row*Width*COUT/32 + Output_col*COUT/32;
 
-    int shmem_idx = (warpId<4) ? warpId*2 : ((warpId-4)*2+16);
-    int Output_row = shmem_idx/8;
-    int Output_col = shmem_idx%8;
-    int *dst_gmem_warp_stream_ptr;
+    for(int i=0; i<8; i++) {
+      bit = (val & (mask << i)) >> i;
+      r = __ballot_sync(0xFFFFFFFF, bit);
+      if (laneId == 0) {
+        *(dst_gmem_warp_stream_ptr+i*Width*Height*COUT/32) = __brev(r);
+      }  
+      // if (block_pos == 3 && warpId == 5 && i == 5) {
+      // // if (block_pos == 2) {
+      //   printf("warpId: %d, laneId: %d, val: %x, r: %x\n", warpId, laneId, val, __brev(r));
+      // }    
 
-    tmp0 = *shmem_warp_stream_ptr;
-    tmp1 = *(shmem_warp_stream_ptr+32);
-    tmp2 = *(shmem_warp_stream_ptr+32*64);
-    tmp3 = *(shmem_warp_stream_ptr+32+32*64);
-    val[0] = tmp0 + 2*tmp1 + 2*tmp2 + 4*tmp3;
+    }
 
-    bit0 = val[0] & (mask << 0);
-    bit1 = (val[0] & (mask << 1)) >> 1;
-    r0 = __ballot_sync(0xFFFFFFFF, bit0);
-    r1 = __ballot_sync(0xFFFFFFFF, bit1);
-    if (laneId == 0) {
-      dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT/32 + block_j*COUT/32 + block_z/32 
-            + Output_row*Width*COUT/32 + Output_col*COUT/32;
-      *dst_gmem_warp_stream_ptr = __brev(r0);
-      *(dst_gmem_warp_stream_ptr+Width*Height*COUT/32) = __brev(r1);
-    }  
-
-    ////////
-    tmp0 = *(shmem_warp_stream_ptr+64);
-    tmp1 = *(shmem_warp_stream_ptr+64+32);
-    tmp2 = *(shmem_warp_stream_ptr+64+32*64);
-    tmp3 = *(shmem_warp_stream_ptr+64+32+32*64);
-    val[1] = tmp0 + 2*tmp1 + 2*tmp2 + 4*tmp3;
-
-    Output_row = (shmem_idx+1)/8;
-    Output_col = (shmem_idx+1)%8;
-
-    bit0 = val[1] & (mask << 0);
-    bit1 = (val[1] & (mask << 1)) >> 1;
-    r0 = __ballot_sync(0xFFFFFFFF, bit0);
-    r1 = __ballot_sync(0xFFFFFFFF, bit1);
-    if (laneId == 0) {
-      dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT/32 + block_j*COUT/32 + block_z/32 
-            + Output_row*Width*COUT/32 + Output_col*COUT/32;
-      *dst_gmem_warp_stream_ptr = __brev(r0);
-      *(dst_gmem_warp_stream_ptr+Width*Height*COUT/32) = __brev(r1);
-    }  
-
-
-    ////////////
-
-    tmp0 = *(shmem_warp_stream_ptr+8*64);
-    tmp1 = *(shmem_warp_stream_ptr+8*64+32);
-    tmp2 = *(shmem_warp_stream_ptr+8*64+32*64);
-    tmp3 = *(shmem_warp_stream_ptr+8*64+32+32*64);
-    val[2] = tmp0 + 2*tmp1 + 2*tmp2 + 4*tmp3;
-
-    Output_row = (shmem_idx+8)/8;
-    Output_col = (shmem_idx+8)%8;
-
-    bit0 = val[2] & (mask << 0);
-    bit1 = (val[2] & (mask << 1)) >> 1;
-    r0 = __ballot_sync(0xFFFFFFFF, bit0);
-    r1 = __ballot_sync(0xFFFFFFFF, bit1);
-    if (laneId == 0) {
-      dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT/32 + block_j*COUT/32 + block_z/32 
-            + Output_row*Width*COUT/32 + Output_col*COUT/32;
-      *dst_gmem_warp_stream_ptr = __brev(r0);
-      *(dst_gmem_warp_stream_ptr+Width*Height*COUT/32) = __brev(r1);
-    }  
-
-    tmp0 = *(shmem_warp_stream_ptr+9*64);
-    tmp1 = *(shmem_warp_stream_ptr+9*64+32);
-    tmp2 = *(shmem_warp_stream_ptr+9*64+32*64);
-    tmp3 = *(shmem_warp_stream_ptr+9*64+32+32*64);
-    val[3] = tmp0 + 2*tmp1 + 2*tmp2 + 4*tmp3;
-
-    Output_row = (shmem_idx+9)/8;
-    Output_col = (shmem_idx+9)%8;
-
-    bit0 = val[3] & (mask << 0);
-    bit1 = (val[3] & (mask << 1)) >> 1;
-    r0 = __ballot_sync(0xFFFFFFFF, bit0);
-    r1 = __ballot_sync(0xFFFFFFFF, bit1);
-    if (laneId == 0) {
-      dst_gmem_warp_stream_ptr = Output + block_i * Width * COUT/32 + block_j*COUT/32 + block_z/32 
-            + Output_row*Width*COUT/32 + Output_col*COUT/32;
-      *dst_gmem_warp_stream_ptr = __brev(r0);
-      *(dst_gmem_warp_stream_ptr+Width*Height*COUT/32) = __brev(r1);
-    }  
     __syncthreads();
   }
 }
@@ -459,6 +471,9 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int Height, int Width, int C
     for (int m = 0; m < Height; m++) {
       for (int n = 0; n < Width; n++) {
       int tmp = 0;
+      int v[16];
+      for(int i=0; i<16; i++) v[i] = 0;
+      
       for(int xb=0; xb<X_BIT; xb++) {
         int X_Multiplier = int_pow(2,xb);
         for(int wb=0; wb<W_BIT; wb++) {
@@ -473,19 +488,64 @@ void compute_ref_pack(int4 *W, int4 *X, int *ref_C, int Height, int Width, int C
                     int x_val = ((mask << k) & x_int) >> k;
                     int w_val = ((mask << k) & w_int) >> k;
                     tmp += X_Multiplier * W_Multiplier * x_val * w_val;
+                    v[8*wb+xb] += x_val*w_val;
                   }
-                  // if(m==0 && n==1 && co == 0) {
-                  //   printf("xb: %d, i: %d, j: %d, k_tile: %d, x_int: %x, w_int: %x, tmp: %d, idx: %d\n", xb, i, j, k_tile, x_int, w_int, tmp, xb*Height*Width*CIN/32 + (m+i)*Width*CIN/32 + (n+j)*CIN/32 + k_tile);
-                  // }
                 }
               }
             }
           }
         }
         C_ref_before_decompose[m*Width*COUT + n*COUT + co]= tmp;
+
+        // if (m==1 && n==1 && co==96) {
+        //   printf("m: %d, n: %d, co: %d, v[0]: %d, v[1]: %d, v[2]: %d, v[3]: %d, v[4]: %d, v[5]: %d, v[6]: %d, v[7]: %d, v[8]: %d, v[9]: %d, v[10]: %d, v[11]: %d, v[12]: %d, v[13]: %d, v[14]: %d, v[15]: %d, val: %x\n", m, n, co, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], tmp);
+        //   int v=0;
+        //   int x_val_collection[36];
+        //   int w_val_collection[36];
+        //   for(int i=0; i<3; i++) {
+        //     for(int j=0; j<3; j++) {
+        //       for(int k_tile=0; k_tile<CIN/32; k_tile++) {
+        //         int x_int = X_int[0*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
+        //         int w_int = W_int[0*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
+        //         x_val_collection[i*3*4+j*4+k_tile] = x_int;
+        //         w_val_collection[i*3*4+j*4+k_tile] = w_int;
+        //         printf("idx: %d, x_int: %x, w_int: %x\n", i*3*4+j*4+k_tile, x_int, w_int);
+        //         for(int k=0; k<32; k++) {
+        //           int mask = 1;
+        //           int x_val = ((mask << k) & x_int) >> k;
+        //           int w_val = ((mask << k) & w_int) >> k;
+        //           v += x_val*w_val;
+        //         }
+        //         // int w = W_int[0*COUT*9*CIN/32 + 96*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
+        //         // printf("%x", w);
+        //       }
+        //     }
+        //   }
+          // for(int i=0; i<36; i++) printf("%08x ", x_val_collection[i]);
+          // printf("\n");
+          // for(int i=0; i<36; i++) printf("%08x ", w_val_collection[i]);
+          // printf("\n");
+          // printf("v: %d\n", v);
+          // printf("\n");
+          // for(int i=0; i<3; i++) {
+          //   for(int j=0; j<3; j++) {
+          //     for(int k_tile=0; k_tile<CIN/32; k_tile++) {
+          //       int x = X_int[0*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
+          //       printf("%x", x);
+          //     }
+          //   }
+          // }
+          // printf("\n");
+        // }
+
       }
     }  
   }
+  // ffff0cec = 1111 1111 1111 1111 0000 1100 1110 1100
+
+  // for(int co=3*32; co<4*32; co++) {
+  //   printf("co: %d, val: %x\n", co-3*32, C_ref_before_decompose[1*Width*COUT + 1*COUT + co]);
+  // }
 
   for(int m=0; m<Height; m++) {
     for(int n=0; n<Width; n++) {
@@ -578,9 +638,6 @@ void compute_ref_pack_pool(int4 *W, int4 *X, int *ref_C, int Height, int Width, 
   //   printf("co: %d, val1: %d, val2: %d, val3: %d, val4: %d, val: %x\n", co, val1, val2, val3, val4, val);
   // }
 
-
-
-
   for(int m=0; m<half_height; m++) {
     for(int n=0; n<half_width; n++) {
       int val[OUT_BIT];
@@ -657,6 +714,8 @@ void validate_results_pack(int *C, int* ref_C, int Height, int Width, int COUT, 
   printf("%s\n", correct ? "Result = PASS" : "Result = FAIL");
 }
 
+
+
 #define verify_output
 
 int main(int argc, char **argv) {
@@ -667,13 +726,13 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 32;
-  int Width = 32;
-  int X_BIT = 2;
+  int Height = 16;
+  int Width = 16;
+  int X_BIT = 8;
   int W_BIT = 2;
 
-  // for(int CIN = 128; CIN <= 2048; CIN+=128) {
-    int CIN = 256;
+  for(int CIN = 128; CIN <= 2048; CIN+=128) {
+    // int CIN = 128;
     int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
@@ -699,12 +758,12 @@ int main(int argc, char **argv) {
   
     int SHMEM_SZ = 65536;
     checkCudaErrors(cudaFuncSetAttribute(
-      APConv_w2a2_pack, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      APConv_w2a8_pack, cudaFuncAttributeMaxDynamicSharedMemorySize,
       SHMEM_SZ));
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1;
+    int NUM_PROFILES = 200;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -713,7 +772,7 @@ int main(int argc, char **argv) {
             cudaEventCreate(&bmma_end);
             cudaEventRecord(bmma_start);
             checkKernelErrors(
-              (APConv_w2a2_pack<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+              (APConv_w2a8_pack<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
                                     SHMEM_SZ>>>(W, X, Output, Height, Width, CIN, COUT)));
             cudaEventRecord(bmma_end);
             cudaEventSynchronize(bmma_end);
@@ -727,8 +786,9 @@ int main(int argc, char **argv) {
     printf("H: %d, W: %d, CIN: %d, COUT: %d, W_BIT: %d, X_BIT: %d\n", Height, Width, CIN, COUT, W_BIT, X_BIT);
     printf("Time: %f ms\n", bmma_ms_avg);
   
-    printf("TOPS: %.2f\n\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
-  
+    printf("TOPS: %.2f\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
+
+
 #ifdef verify_output
     printf("Validating results...\n");
     checkCudaErrors(cudaMemcpy(Output_h, Output, sizeof(int) * Height * Width * COUT, cudaMemcpyDeviceToHost));
@@ -749,8 +809,6 @@ int main(int argc, char **argv) {
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(W)));
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
-
-  // }
-
+  }
   return EXIT_SUCCESS;
 }
