@@ -100,7 +100,7 @@ __global__ void APConv_w2a8_pack_pool(const int4 *W, const int4 *X, int *Output,
     // This for loop computes [0,1,2,...,int(9*CIN/128/CHUNK_K)*CHUNK_K-1]. Next for loop computes [int(9*CIN/128/CHUNK_K)*CHUNK_K, ..., 9*CIN/128-1]
     // Go through the global K dimension by a fixed step at a time.
 #pragma unroll
-    for (int tile_k = 0; tile_k+CHUNK_K < 9*CIN/128; tile_k += CHUNK_K) {
+    for (int tile_k = 0; tile_k+CHUNK_K <= 9*CIN/128; tile_k += CHUNK_K) {
 
       int SHMEM_i = threadIdx.x/4;
       int bit_flag = SHMEM_i / 8; // bit_flag = 0/1, indicates 
@@ -133,24 +133,17 @@ __global__ void APConv_w2a8_pack_pool(const int4 *W, const int4 *X, int *Output,
 
       __syncthreads();
 
-      // if (block_pos == 3 && warpId == 0 && laneId == 0) {
-      //   int i = 5;
+      // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+      //   int i = 0;
       //   for(int j = 0; j < 16; j++) {
       //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
-      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
+      //     printf("Loading GL X. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
       //   }
       //   i=64;
       //   for(int j = 0; j < 16; j++) {
       //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
-      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
+      //     printf("Loading GL W. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
       //   }
-
-      //   // for(int i = 0; i < 128; i++) {
-      //   //   for(int j = 0; j < 16; j++) {
-      //   //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
-      //   //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
-      //   //   }
-      //   // }
       // }
   
 
@@ -225,26 +218,17 @@ __global__ void APConv_w2a8_pack_pool(const int4 *W, const int4 *X, int *Output,
 
       __syncthreads();
 
-      // if (block_pos == 3 && warpId == 0 && laneId == 0) {
-      //   int i = 5;
+      // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+      //   int i = 0;
       //   for(int j = 0; j < 4; j++) {
       //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
-      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
+      //     printf("Loading GL X. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
       //   }
       //   i=64;
       //   for(int j = 0; j < 4; j++) {
       //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
-      //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
+      //     printf("Loading GL W. tile_k: %d, i: %d, j: %d, val: %08x\n", tile_k, i, j, *tile_ptr);
       //   }
-
-
-
-      //   // for(int i = 0; i < 128; i++) {
-      //   //   for(int j = 0; j < 16; j++) {
-      //   //     int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
-      //   //     printf("Loading GL. tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
-      //   //   }
-      //   // }
       // }
   
       // Compute a grid of C matrix tiles in each warp.
@@ -299,14 +283,14 @@ __global__ void APConv_w2a8_pack_pool(const int4 *W, const int4 *X, int *Output,
 
     // printf("%d\n\n\n\n", *((int*)&shmem[0][0] + 5*64 + 0));
 
-    // if (block_pos == 3 && warpId == 0 && laneId == 0) {
-    //   int i = 5;
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+    //   int i = 0;
     //   int v[16];
     //   for(int j=0; j<32; j++) {
 
     //     for (int k=0; k<8; k++) {
-    //       v[2*k] = *((int*)&shmem[0][0] + 5*64 + j + k*8*64);
-    //       v[2*k+1] = *((int*)&shmem[0][0] + 5*64 + j + k*8*64 + 32);
+    //       v[2*k] = *((int*)&shmem[0][0] + 0*64 + j + k*8*64);
+    //       v[2*k+1] = *((int*)&shmem[0][0] + 0*64 + j + k*8*64 + 32);
     //     }
         
     //     int multiplier = 1;
@@ -317,7 +301,7 @@ __global__ void APConv_w2a8_pack_pool(const int4 *W, const int4 *X, int *Output,
     //       val += v[2*k+1]*multiplier;
     //     }
 
-    //     printf("i: %d, j: %d, v[0]: %d, v[1]: %d, v[2]: %d, v[3]: %d, v[4]: %d, v[5]: %d, v[6]: %d, v[7]: %d, v[8]: %d, v[9]: %d, v[10]: %d, v[11]: %d, v[12]: %d, v[13]: %d, v[14]: %d, v[15]: %d, val: %x\n", i, j, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], val);
+    //     printf("i: %d, j: %d, v[0]: %d, v[1]: %d, v[2]: %d, v[3]: %d, v[4]: %d, v[5]: %d, v[6]: %d, v[7]: %d, v[8]: %d, v[9]: %d, v[10]: %d, v[11]: %d, v[12]: %d, v[13]: %d, v[14]: %d, v[15]: %d, val: %d\n", i, j, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], val);
     //   }
 
     //   // for(int i = 5; i < 64; i++) {
@@ -360,9 +344,9 @@ __global__ void APConv_w2a8_pack_pool(const int4 *W, const int4 *X, int *Output,
       int val2 = *(shmem_warp_stream_ptr+4*32);
       int val3 = *(shmem_warp_stream_ptr+5*32);
       int final_val = (val0+val1+val2+val3)/4;
-      if (block_pos == 0 && warpId == 0) {
-        printf("laneId: %d, val0: %d, val1: %d, val2: %d, val3: %d, final_val: %x\n", laneId, val0, val1, val2, val3, final_val);
-      }
+      // if (block_pos == 0 && warpId == 0) {
+      //   printf("laneId: %d, val0: %d, val1: %d, val2: %d, val3: %d, final_val: %x\n", laneId, val0, val1, val2, val3, final_val);
+      // }
       int mask = 1;
       int bit;
       unsigned r;
@@ -629,46 +613,37 @@ void compute_ref_pack_pool(int4 *W, int4 *X, int *ref_C, int Height, int Width, 
         }
         C_ref_before_decompose[m*Width*COUT + n*COUT + co]= tmp;
 
-        if (m==0 && n==0 && co==0) {
-          printf("m: %d, n: %d, co: %d, v[0]: %d, v[1]: %d, v[2]: %d, v[3]: %d, v[4]: %d, v[5]: %d, v[6]: %d, v[7]: %d, v[8]: %d, v[9]: %d, v[10]: %d, v[11]: %d, v[12]: %d, v[13]: %d, v[14]: %d, v[15]: %d, val: %d\n", m, n, co, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], tmp);
-          int v=0;
-          int x_val_collection[36];
-          int w_val_collection[36];
-          for(int i=0; i<3; i++) {
-            for(int j=0; j<3; j++) {
-              for(int k_tile=0; k_tile<CIN/32; k_tile++) {
-                int x_int = X_int[0*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
-                int w_int = W_int[0*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
-                x_val_collection[i*3*4+j*4+k_tile] = x_int;
-                w_val_collection[i*3*4+j*4+k_tile] = w_int;
-                printf("idx: %d, x_int: %x, w_int: %x\n", i*3*4+j*4+k_tile, x_int, w_int);
-                for(int k=0; k<32; k++) {
-                  int mask = 1;
-                  int x_val = ((mask << k) & x_int) >> k;
-                  int w_val = ((mask << k) & w_int) >> k;
-                  v += x_val*w_val;
-                }
-                // int w = W_int[0*COUT*9*CIN/32 + 96*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
-                // printf("%x", w);
-              }
-            }
-          }
-          for(int i=0; i<36; i++) printf("%08x ", x_val_collection[i]);
-          printf("\n");
-          for(int i=0; i<36; i++) printf("%08x ", w_val_collection[i]);
-          printf("\n");
-          printf("v: %d\n", v);
-          // printf("\n");
-          // for(int i=0; i<3; i++) {
-          //   for(int j=0; j<3; j++) {
-          //     for(int k_tile=0; k_tile<CIN/32; k_tile++) {
-          //       int x = X_int[0*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
-          //       printf("%x", x);
-          //     }
-          //   }
-          // }
-          // printf("\n");
-        }
+        // if (m==0 && n==0 && co==0) {
+        //   printf("m: %d, n: %d, co: %d, v[0]: %d, v[1]: %d, v[2]: %d, v[3]: %d, v[4]: %d, v[5]: %d, v[6]: %d, v[7]: %d, v[8]: %d, v[9]: %d, v[10]: %d, v[11]: %d, v[12]: %d, v[13]: %d, v[14]: %d, v[15]: %d, val: %d\n", m, n, co, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8], v[9], v[10], v[11], v[12], v[13], v[14], v[15], tmp);
+        //   int v=0;
+        //   int x_val_collection[144];
+        //   int w_val_collection[144];
+        //   for(int i=0; i<3; i++) {
+        //     for(int j=0; j<3; j++) {
+        //       for(int k_tile=0; k_tile<CIN/32; k_tile++) {
+        //         int x_int = X_int[0*(Height+2)*(Width+2)*CIN/32 + (m+i)*(Width+2)*CIN/32 + (n+j)*CIN/32 + k_tile];
+        //         int w_int = W_int[0*COUT*9*CIN/32 + co*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
+        //         x_val_collection[i*3*16+j*16+k_tile] = x_int;
+        //         w_val_collection[i*3*16+j*16+k_tile] = w_int;
+        //         // printf("idx: %d, x_int: %x, w_int: %x\n", i*3*4+j*4+k_tile, x_int, w_int);
+        //         for(int k=0; k<32; k++) {
+        //           int mask = 1;
+        //           int x_val = ((mask << k) & x_int) >> k;
+        //           int w_val = ((mask << k) & w_int) >> k;
+        //           v += x_val*w_val;
+        //         }
+        //         // int w = W_int[0*COUT*9*CIN/32 + 96*9*CIN/32 + i*3*CIN/32 + j*CIN/32 + k_tile];
+        //         // printf("%x", w);
+        //       }
+        //     }
+        //   }
+        //   for(int i=0; i<144; i++) printf("%08x ", x_val_collection[i]);
+        //   printf("\n");
+        //   for(int i=0; i<144; i++) printf("%08x ", w_val_collection[i]);
+        //   printf("\n");
+        //   printf("v: %d\n", v);
+        //   printf("\n");
+        // }
 
 
       }
@@ -697,14 +672,14 @@ void compute_ref_pack_pool(int4 *W, int4 *X, int *ref_C, int Height, int Width, 
 
   // d25c2c41 = 1101 0010 0101 1100 0010 1100 0100 0001
 
-  for(int co=0; co<32; co++) {
-    int val1 = C_ref_before_decompose[0*Width*COUT+ 0*COUT+co];
-    int val2 = C_ref_before_decompose[0*Width*COUT+ 1*COUT+co];
-    int val3 = C_ref_before_decompose[1*Width*COUT+ 0*COUT+co];
-    int val4 = C_ref_before_decompose[1*Width*COUT+ 1*COUT+co];
-    int val = C_ref_after_pool[0*half_width*COUT+0*COUT+co];
-    printf("co: %d, val1: %d, val2: %d, val3: %d, val4: %d, val: %d\n", co, val1, val2, val3, val4, val);
-  }
+  // for(int co=0; co<32; co++) {
+  //   int val1 = C_ref_before_decompose[0*Width*COUT+ 0*COUT+co];
+  //   int val2 = C_ref_before_decompose[0*Width*COUT+ 1*COUT+co];
+  //   int val3 = C_ref_before_decompose[1*Width*COUT+ 0*COUT+co];
+  //   int val4 = C_ref_before_decompose[1*Width*COUT+ 1*COUT+co];
+  //   int val = C_ref_after_pool[0*half_width*COUT+0*COUT+co];
+  //   printf("co: %d, val1: %d, val2: %d, val3: %d, val4: %d, val: %d\n", co, val1, val2, val3, val4, val);
+  // }
 
   for(int m=0; m<half_height; m++) {
     for(int n=0; n<half_width; n++) {
@@ -796,13 +771,13 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 2;
-  int Width = 4;
+  int Height = 16;
+  int Width = 16;
   int X_BIT = 8;
   int W_BIT = 2;
 
-  // for(int CIN = 128; CIN <= 2048; CIN+=128) {
-    int CIN = 512;
+  for(int CIN = 128; CIN <= 2048; CIN+=128) {
+    // int CIN = 512;
     int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
@@ -879,7 +854,7 @@ int main(int argc, char **argv) {
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
 
-  // }
+  }
 
   return EXIT_SUCCESS;
 }
