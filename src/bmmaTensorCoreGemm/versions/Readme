@@ -347,3 +347,8 @@ Results validated
 APConv-w2a8. Added quantization and packing. Added 2x2 pooling. 64x64.
 Results NOT validated
 
+76:
+APMM-w2a8. With the same data layout as Conv. 32-bit output. 64x64.
+Results validated. Support CHUNK_K = 1.
+
+
