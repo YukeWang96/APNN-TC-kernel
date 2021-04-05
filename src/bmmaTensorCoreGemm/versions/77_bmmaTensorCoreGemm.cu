@@ -77,9 +77,8 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma::experimental;
 
-__global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
+__global__ void apmm_w1a8(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
   // GEMM configuration.
-  printf("ckpt0\n");
   int K_TILES = K_GLOBAL / 128;
 
   int W_bit_offset = M_GLOBAL*K_GLOBAL/128;
@@ -109,10 +108,10 @@ __global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
   //   }
   // }
 
-  printf("ckpt1\n");
+
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_GLOBAL/16) * 64;
-    const unsigned int block_tile_j = block_pos % (N_GLOBAL/16) * 16;
+    const unsigned int block_tile_i = block_pos / (N_GLOBAL/8) * 64;
+    const unsigned int block_tile_j = block_pos % (N_GLOBAL/8) * 8;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
     if (block_tile_i >= M_GLOBAL) {
@@ -137,7 +136,7 @@ __global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
     if (warpId < 4) {
       warp_ptr = &W[block_tile_i * ROW_BIT] + warpId * 16 * ROW_BIT;
     } else {
-      warp_ptr = &X[block_tile_j * ROW_BIT + (warpId-4)*X_bit_offset];
+      warp_ptr = &X[block_tile_j * ROW_BIT + (warpId-4)*2*X_bit_offset];
     }
 
     // Go through the global K dimension by a fixed step at a time.
@@ -251,33 +250,43 @@ __global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
 
     // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
     // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
-    size_t idx = threadIdx.x/4 * 64 + (threadIdx.x%4)*4;
+    size_t idx = threadIdx.x/8 * 64 + threadIdx.x%8;
     int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
 
-    U4 val;
-    val.a[0] = 0;
-    val.a[1] = 0;
-    val.a[2] = 0;
-    val.a[3] = 0;
-    U4 tmp;
-
+    int val = 0;
     int multiplier = 1;
 #pragma unroll
-    for(int j=0; j<4; j++) {
-      tmp.vec = *((int4*)shmem_warp_stream_ptr+4*j);
-      val.a[0] += (multiplier*tmp.a[0]);
-      val.a[1] += (multiplier*tmp.a[1]);
-      val.a[2] += (multiplier*tmp.a[2]);
-      val.a[3] += (multiplier*tmp.a[3]);
+    for(int j=0; j<8; j++) {
+      int tmp = *(shmem_warp_stream_ptr+8*j);
+      val += (multiplier*tmp);
       multiplier *= 2;
     }
 
 
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
-    size_t gmem_idx = block_tile_i*N_GLOBAL + block_tile_j + (threadIdx.x/4)*N_GLOBAL + (threadIdx.x%4)*4;
+    size_t gmem_idx = block_tile_i*N_GLOBAL + block_tile_j + (threadIdx.x/8)*N_GLOBAL + threadIdx.x%8;
     // printf("block_tile_i: %d, block_tile_j: %d, warpId: %d, laneId: %d, gmem_idx: %d\n", block_tile_i, block_tile_j, warpId, laneId, gmem_idx);
-    *((int4*)D[gmem_idx]) = val.vec;
+    D[gmem_idx] = val;
+
+    idx += 32*64;
+    shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
+
+    val = 0;
+    multiplier = 1;
+#pragma unroll
+    for(int j=0; j<8; j++) {
+      int tmp = *(shmem_warp_stream_ptr+8*j);
+      val += (multiplier*tmp);
+      multiplier *= 2;
+    }
+
+
+    // This warp's pointer to the C matrix data to copy memory from to shared memory. 
+    // TODO: May be moved outside the for loop.
+    gmem_idx += 32*N_GLOBAL;
+    // printf("block_tile_i: %d, block_tile_j: %d, warpId: %d, laneId: %d, gmem_idx: %d\n", block_tile_i, block_tile_j, warpId, laneId, gmem_idx);
+    D[gmem_idx] = val;
 
     __syncthreads();
   }
@@ -460,7 +469,7 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int X_BIT = 4;
+  int X_BIT = 8;
   int W_BIT = 1;
 
   for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
@@ -495,7 +504,7 @@ int main(int argc, char **argv) {
   
     int SHMEM_SZ = 65536;
     checkCudaErrors(cudaFuncSetAttribute(
-      apmm_w1a4, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      apmm_w1a8, cudaFuncAttributeMaxDynamicSharedMemorySize,
       SHMEM_SZ));
   
     // Run ours NUM_PROFILES times and record time.
@@ -509,7 +518,7 @@ int main(int argc, char **argv) {
             cudaEventCreate(&bmma_end);
             cudaEventRecord(bmma_start);
             checkKernelErrors(
-              (apmm_w1a4<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+              (apmm_w1a8<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
                                     SHMEM_SZ>>>(W, X, Output, M_GLOBAL, N_GLOBAL, K_GLOBAL, W_BIT, X_BIT)));
                   cudaEventRecord(bmma_end);
             cudaEventSynchronize(bmma_end);

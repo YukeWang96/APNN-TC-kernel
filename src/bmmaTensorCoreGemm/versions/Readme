@@ -351,4 +351,10 @@ Results NOT validated
 APMM-w2a8. With the same data layout as Conv. 32-bit output. 64x64.
 Results validated. Support CHUNK_K = 1.
 
+77:
+APMM-w1a8. With the same data layout as Conv. 32-bit output. 64x64.
+Results validated. Support CHUNK_K = 1.
 
+78:
+APMM-w1a4. With the same data layout as Conv. 32-bit output. 64x64.
+Results NOT validated. Support CHUNK_K = 1.
