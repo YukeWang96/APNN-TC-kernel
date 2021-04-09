@@ -357,4 +357,9 @@ Results validated. Support CHUNK_K = 1.
 
 78:
 APMM-w1a4. With the same data layout as Conv. 32-bit output. 64x64.
-Results NOT validated. Support CHUNK_K = 1.
+Results validated. Support CHUNK_K = 1.
+
+79:
+APMM-W3-A1. Tiling Size: 64x64.
+Results are not validated. Support CHUNK_K = 1.
+

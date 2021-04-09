@@ -79,7 +79,7 @@ using namespace nvcuda::wmma::experimental;
 
 __global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
   // GEMM configuration.
-  printf("ckpt0\n");
+  // printf("ckpt0\n");
   int K_TILES = K_GLOBAL / 128;
 
   int W_bit_offset = M_GLOBAL*K_GLOBAL/128;
@@ -108,8 +108,18 @@ __global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
   //     }
   //   }
   // }
+  // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+  //   for(int i=0; i<M_GLOBAL; i++) {
+  //     for(int j=0; j<N_GLOBAL; j++) {
+  //       printf("D[%d][%d]: %d\n", i, j, D[i*N_GLOBAL+j]);
+  //     }
+  //   }
+  // }
 
-  printf("ckpt1\n");
+  
+
+
+  // printf("ckpt1\n");
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
     const unsigned int block_tile_i = block_pos / (N_GLOBAL/16) * 64;
     const unsigned int block_tile_j = block_pos % (N_GLOBAL/16) * 16;
@@ -162,11 +172,7 @@ __global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
 
       shmem_ptr += 8*4*(CHUNK_K+SKEW);
 
-      if (warpId < 4) {
-        lane_ptr += 8*ROW_BIT*4;
-      } else {
-        lane_ptr += X_bit_offset*4;
-      }
+      lane_ptr += 8*ROW_BIT*4;
 
       *shmem_ptr = *lane_ptr;
 
@@ -277,7 +283,8 @@ __global__ void apmm_w1a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
     // TODO: May be moved outside the for loop.
     size_t gmem_idx = block_tile_i*N_GLOBAL + block_tile_j + (threadIdx.x/4)*N_GLOBAL + (threadIdx.x%4)*4;
     // printf("block_tile_i: %d, block_tile_j: %d, warpId: %d, laneId: %d, gmem_idx: %d\n", block_tile_i, block_tile_j, warpId, laneId, gmem_idx);
-    *((int4*)D[gmem_idx]) = val.vec;
+    // printf("block_tile_i: %d, block_tile_j: %d, gmem_idx: %d\n", block_tile_i, block_tile_j, gmem_idx);
+    *((int4*)&D[gmem_idx]) = val.vec;
 
     __syncthreads();
   }
@@ -289,9 +296,9 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < M_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
-        // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
         // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = i;
-        W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
+        // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }
   }
@@ -299,9 +306,9 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
   for(int b = 0; b<X_BIT; b++) {
     for(int i = 0; i < N_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
-        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
         // X_int[i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
-        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
+        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }  
   }
@@ -463,10 +470,11 @@ int main(int argc, char **argv) {
   int X_BIT = 4;
   int W_BIT = 1;
 
-  for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
-    // int M_GLOBAL = 256;
-    int N_GLOBAL = M_GLOBAL;
-    int K_GLOBAL = M_GLOBAL;
+  for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
+    int M_GLOBAL = 64;
+    // int N_GLOBAL = 64;
+    // int N_GLOBAL = M_GLOBAL;
+    int K_GLOBAL = N_GLOBAL;
   
     int4 *X = NULL;
     int4 *W = NULL;
@@ -521,7 +529,7 @@ int main(int argc, char **argv) {
   
     bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
 
-    printf("V77, 64x64. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
+    printf("V78, 64x64. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
     printf("Time: %f ms\n", bmma_ms_avg);  
     printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
   
