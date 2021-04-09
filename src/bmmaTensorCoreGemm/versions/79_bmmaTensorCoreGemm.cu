@@ -77,7 +77,7 @@
 using namespace nvcuda;
 using namespace nvcuda::wmma::experimental;
 
-__global__ void apmm_w5a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
+__global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, int wb, int xb) {
   // GEMM configuration.
   // printf("ckpt0\n");
   int K_TILES = K_GLOBAL / 128;
@@ -121,11 +121,11 @@ __global__ void apmm_w5a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
 
   // printf("ckpt1\n");
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_GLOBAL/32) * 10;
-    const unsigned int block_tile_j = block_pos % (N_GLOBAL/32) * 32;
+    const unsigned int block_tile_i = block_pos / (N_GLOBAL/64) * 21;
+    const unsigned int block_tile_j = block_pos % (N_GLOBAL/64) * 64;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
-    if (block_tile_i+10 >= M_GLOBAL) {
+    if (block_tile_i+21 >= M_GLOBAL) {
       break;
     }
 
@@ -468,7 +468,7 @@ int main(int argc, char **argv) {
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
   int X_BIT = 1;
-  int W_BIT = 5;
+  int W_BIT = 3;
 
   for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
     int M_GLOBAL = 64;
@@ -503,7 +503,7 @@ int main(int argc, char **argv) {
   
     int SHMEM_SZ = 65536;
     checkCudaErrors(cudaFuncSetAttribute(
-      apmm_w5a1, cudaFuncAttributeMaxDynamicSharedMemorySize,
+      apmm_w3a1, cudaFuncAttributeMaxDynamicSharedMemorySize,
       SHMEM_SZ));
   
     // Run ours NUM_PROFILES times and record time.
@@ -517,7 +517,7 @@ int main(int argc, char **argv) {
             cudaEventCreate(&bmma_end);
             cudaEventRecord(bmma_start);
             checkKernelErrors(
-              (apmm_w5a1<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
+              (apmm_w3a1<<<deviceProp.multiProcessorCount, THREADS_PER_BLOCK,
                                     SHMEM_SZ>>>(W, X, Output, M_GLOBAL, N_GLOBAL, K_GLOBAL, W_BIT, X_BIT)));
                   cudaEventRecord(bmma_end);
             cudaEventSynchronize(bmma_end);

@@ -363,3 +363,13 @@ Results validated. Support CHUNK_K = 1.
 APMM-W3-A1. Tiling Size: 64x64.
 Results are not validated. Support CHUNK_K = 1.
 
+80:
+APMM-W5-A1. Tiling Size: 64x64.
+Results are not validated. Support CHUNK_K = 1.
+
+81:
+APMM-W6-A2. Tiling Size: 64x64.
+Results are not validated. Support CHUNK_K = 1.
+
+
+

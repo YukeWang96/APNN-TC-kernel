@@ -121,11 +121,11 @@ __global__ void apmm_w5a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
 
   // printf("ckpt1\n");
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_GLOBAL/32) * 10;
-    const unsigned int block_tile_j = block_pos % (N_GLOBAL/32) * 32;
+    const unsigned int block_tile_i = block_pos / (N_GLOBAL/64) * 12;
+    const unsigned int block_tile_j = block_pos % (N_GLOBAL/64) * 64;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
-    if (block_tile_i+10 >= M_GLOBAL) {
+    if (block_tile_i+12 >= M_GLOBAL) {
       break;
     }
 
@@ -529,7 +529,7 @@ int main(int argc, char **argv) {
   
     bmma_ms_avg = bmma_ms_avg/(float)NUM_PROFILES;
 
-    printf("V79, 64x64. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
+    printf("V80, 64x64. M_GLOBAL: %d, N_GLOBAL: %d, K_GLOBAL: %d, X_BIT: %d, W_BIT: %d\n", M_GLOBAL, N_GLOBAL, K_GLOBAL, X_BIT, W_BIT);
     printf("Time: %f ms\n", bmma_ms_avg);  
     printf("TOPS: %.2f\n", (((double)(M_GLOBAL) * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
   
