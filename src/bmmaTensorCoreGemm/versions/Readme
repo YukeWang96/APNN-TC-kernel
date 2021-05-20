@@ -371,5 +371,9 @@ Results are not validated. Support CHUNK_K = 1.
 APMM-W6-A2. Tiling Size: 64x64.
 Results are not validated. Support CHUNK_K = 1.
 
-
+82:
+APConv-w1a2. Only TC Computation without bit combination and bit decomposition. Tiling Size: 64x64.
+Memory access is the same as V51. Only commented out the bit combination code.
+The result is not meanful since it does not have bit combination.
+I wrote this code only to measure the performance overhead of bit combination.
 
