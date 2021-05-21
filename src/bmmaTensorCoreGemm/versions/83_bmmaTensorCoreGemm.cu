@@ -91,28 +91,30 @@ __global__ void apmm_w4a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
   const unsigned int warpId = threadIdx.x / WARP_SIZE;
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
-  if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-    for(int b=0; b<wb; b++) {
-      printf("bit: %d, ", b);
-      for(int i=0; i<1; i++) {
-        for(int j=0; j<K_GLOBAL/32; j++) {
-          // printf("bit: %d, W[%d][%d]: %x\n", b, i, j, *((int*)W+b*X_bit_offset + i*K_GLOBAL/32+j));
-          printf("%08x ", *((int*)W+b*X_bit_offset + i*K_GLOBAL/32+j));
-        }
-        printf("\n");
-      }
-    }
-  }
   // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-  //   for(int b=0; b<xb; b++) {
-  //     for(int i=0; i<N_GLOBAL; i++) {
+  //   for(int b=0; b<wb; b++) {
+  //     printf("W bit: %d, ", b);
+  //     for(int i=0; i<1; i++) {
   //       for(int j=0; j<K_GLOBAL/32; j++) {
-  //         printf("bit: %d, X[%d][%d]: %x\n", b, i, j, *((int*)X+b*X_bit_offset + i*K_GLOBAL/32+j));
+  //         // printf("bit: %d, W[%d][%d]: %x\n", b, i, j, *((int*)W+b*X_bit_offset + i*K_GLOBAL/32+j));
+  //         printf("%08x ", *((int*)W+b*W_bit_offset*4 + i*K_GLOBAL/32+j));
   //       }
+  //       printf("\n");
   //     }
   //   }
   // }
-
+  // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+  //   for(int b=0; b<xb; b++) {
+  //     printf("X bit: %d, ", b);
+  //     for(int i=0; i<1; i++) {
+  //       for(int j=0; j<K_GLOBAL/32; j++) {
+  //         // printf("bit: %d, W[%d][%d]: %x\n", b, i, j, *((int*)W+b*X_bit_offset + i*K_GLOBAL/32+j));
+  //         printf("%08x ", *((int*)X+b*X_bit_offset*4 + i*K_GLOBAL/32+j));
+  //       }
+  //       printf("\n");
+  //     }
+  //   }
+  // }
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
     const unsigned int block_tile_i = block_pos / (N_GLOBAL/16) * 16;
@@ -175,8 +177,8 @@ __global__ void apmm_w4a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       __syncthreads();
 
       // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-      //   for(int i=0; i<128; i++) {
-      //     printf("Load from GL. i: %d, val: %x %x %x %x \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
+      //   for(int i=0; i<64; i+=16) {
+      //     printf("Load from GL. i: %d, val: %08x %08x %08x %08x \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
       //   }
       // }
 
@@ -240,9 +242,9 @@ __global__ void apmm_w4a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
     __syncthreads();
 
     // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-    //   for(int i=62; i<64; i++) {
-    //     for(int j=0; j<64; j++) {
-    //       printf("i: %d, j: %d, val: %d\n", i, j, *((int*)&shmem[0][0]+i*64+j));
+    //   for(int i=0; i<4; i++) {
+    //     for(int j=0; j<4; j++) {
+    //       printf("i: %d, j: %d, val: %d\n", i, j, *((int*)&shmem[0][0]+i*64*16+j*16));
     //     }
     //   }
     // }
@@ -264,9 +266,14 @@ __global__ void apmm_w4a4(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
         cur_multiplier *= 2;
       }
       base_multiplier *= 2;
+      shmem_warp_stream_ptr += 16*64;
     }
 
     __syncthreads();
+
+    // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+    //   printf("val: %d\n", val);
+    // }
 
     // This warp's pointer to the C matrix data to copy memory from to shared memory. 
     // TODO: May be moved outside the for loop.
@@ -297,9 +304,9 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
   for(int b = 0; b<X_BIT; b++) {
     for(int i = 0; i < N_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
-        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
         // X_int[i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
-        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
+        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }  
   }
@@ -410,8 +417,8 @@ void validate_results(int *C, int* ref_C, int M_, int N_) {
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for(int i = 0; i < 1; i++) {
-    for(int j = 0; j < 1; j++) {
+  for(int i = 0; i < M_; i++) {
+    for(int j = 0; j < N_; j++) {
       int idx = i*N_+j;
       double dst = fabs(C[idx] - ref_C[idx]);
       double abs = fabs(C[idx]) * fabs(ref_C[idx]);
@@ -453,7 +460,7 @@ void validate_results_pack(int *C, int* ref_C, int M_, int N_, int OUT_BIT) {
 }
 
 
-#define verify_output
+// #define verify_output
 
 int main(int argc, char **argv) {
 
@@ -466,10 +473,10 @@ int main(int argc, char **argv) {
   int W_BIT = 4;
 
   int M_GLOBAL = 64;
-  int N_GLOBAL = 64;
-  int K_GLOBAL = 128;
-// for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
-    // int K_GLOBAL = N_GLOBAL;
+  // int N_GLOBAL = 64;
+  // int K_GLOBAL = 128;
+  for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
+    int K_GLOBAL = N_GLOBAL;
   
     int4 *X = NULL;
     int4 *W = NULL;
@@ -503,7 +510,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1;
+    int NUM_PROFILES = 1000;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -550,7 +557,7 @@ int main(int argc, char **argv) {
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
     checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
   
-  // }
+  }
 
   return EXIT_SUCCESS;
 }
