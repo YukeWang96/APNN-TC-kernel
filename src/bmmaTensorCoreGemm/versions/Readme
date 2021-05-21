@@ -380,3 +380,9 @@ I wrote this code only to measure the performance overhead of bit combination.
 83:
 APMM-w4a4. With the same data layout as Conv. 32-bit output. 64x64.
 Results validated. Support CHUNK_K = 1.
+
+84:
+APMM-w1a1. With the same data layout as Conv. 32-bit output. 64x64.
+No need to reduce since it is w1a1.
+Writing directly from FRAG to GL without SHMEM.
+Results validated. Support CHUNK_K = 1.
