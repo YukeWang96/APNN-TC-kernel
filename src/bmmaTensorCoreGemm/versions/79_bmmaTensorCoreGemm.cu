@@ -116,10 +116,6 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
   //   }
   // }
 
-  
-
-
-  // printf("ckpt1\n");
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
     const unsigned int block_tile_i = block_pos / (N_GLOBAL/64) * 21;
     const unsigned int block_tile_j = block_pos % (N_GLOBAL/64) * 64;
@@ -141,14 +137,7 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       for(int j = 0; j < WARP_ROW_TILES; j++)
         wmma::fill_fragment(c[i][j], 0);
     
-    // Select what warp copies what matrix to shared memory.
-    // Warps 0-3 copy the A matrix, warps 4-7 copy the B matrix.
-    const int4 *warp_ptr;
-    if (warpId < 4) {
-      warp_ptr = &W[0] + warpId * 16 * ROW_BIT;
-    } else {
-      warp_ptr = &X[block_tile_j * ROW_BIT + (warpId-4)*16*ROW_BIT];
-    }
+
 
     // Go through the global K dimension by a fixed step at a time.
 #pragma unroll
@@ -156,24 +145,31 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       // Offset in shared memory from which the B matrix is stored.
       const size_t shmem_idx_b_off = 64; // TODO: This BLOCK_COL_TILES may be selected to improve performance. Maybe moved outside the for loop.
 
-      // Copy slices of the A and B matrices to shared memory.
-      // The first half of the warps in the CTA copy the A matrix, the rest copy
-      // the B matrix.
-      int *shmem_ptr = (int*)shmem + warpId*16*4*(CHUNK_K+SKEW) + (laneId/4)*4*(CHUNK_K+SKEW) + laneId%4;
 
       // First half of the warp copies the first row / column of the matrix,
       // the second half of the warp copies the next.
       // int4 *lane_ptr = (int4 *)(warp_ptr + tile_k * (K/128) +
       //                           (laneId / CHUNK_COPY_LINE_LANES) * (K_GLOBAL/128)) +
       //                  (laneId % CHUNK_COPY_LINE_LANES); // (K/128), since K=128 in bit. int4 is 128 bit.
-      int *lane_ptr = (int*)warp_ptr + laneId/4*ROW_BIT*4 + laneId%4 + tile_k*4;
+      int *lane_ptr;
+      int *shmem_ptr;
+      if (warpId < 4) {
+        lane_ptr = (int*)W + (threadIdx.x/42)*W_bit_offset*4 + block_tile_i*K_GLOBAL/32 + (threadIdx.x%42)/2*K_GLOBAL/32 + (threadIdx.x%42)%2 + tile_k*4;
+        shmem_ptr = (int*)shmem + (threadIdx.x/2)*4*(CHUNK_K+SKEW) + threadIdx.x%2;
+      } else {
+        lane_ptr = (int*)&X[block_tile_j * ROW_BIT + (warpId-4)*16*ROW_BIT] + laneId/4*ROW_BIT*4 + laneId%4 + tile_k*4;
+        shmem_ptr = (int*)shmem + warpId*16*4*(CHUNK_K+SKEW) + (laneId/4)*4*(CHUNK_K+SKEW) + laneId%4;
+      }
       
       *shmem_ptr = *lane_ptr;
 
-      shmem_ptr += 8*4*(CHUNK_K+SKEW);
-
-      lane_ptr += 8*ROW_BIT*4;
-
+      if (warpId < 4) {
+        lane_ptr += 2;
+        shmem_ptr += 2;
+      } else {
+        lane_ptr += 8*ROW_BIT*4;
+        shmem_ptr += 8*4*(CHUNK_K+SKEW);
+      }
       *shmem_ptr = *lane_ptr;
 
       // U4 tmp_probe;
@@ -183,8 +179,8 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       __syncthreads();
 
       // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-      //   for(int i=0; i<128; i++) {
-      //     printf("Load from GL. i: %d, val: %x %x %x %x \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
+      //   for(int i=0; i<63; i+=21) {
+      //     printf("Load from GL. i: %d, val: %d %d %d %d \n", i, *((int*)&shmem[i][0]+0), *((int*)&shmem[i][0]+1), *((int*)&shmem[i][0]+2), *((int*)&shmem[i][0]+3));
       //   }
       // }
 
@@ -255,37 +251,20 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
     //   }
     // }
 
-    // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
-    // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
-    size_t idx = threadIdx.x/4 * 64 + (threadIdx.x%4)*4;
-    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+idx;
-
-    U4 val;
-    val.a[0] = 0;
-    val.a[1] = 0;
-    val.a[2] = 0;
-    val.a[3] = 0;
-    U4 tmp;
-
-    int multiplier = 1;
 #pragma unroll
-    for(int j=0; j<4; j++) {
-      tmp.vec = *((int4*)shmem_warp_stream_ptr+4*j);
-      val.a[0] += (multiplier*tmp.a[0]);
-      val.a[1] += (multiplier*tmp.a[1]);
-      val.a[2] += (multiplier*tmp.a[2]);
-      val.a[3] += (multiplier*tmp.a[3]);
-      multiplier *= 2;
+    for(int i=0; i<5; i++) {
+      // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
+      // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
+      int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x+i*4*64;
+      int val = *(shmem_warp_stream_ptr) + 2*(*(shmem_warp_stream_ptr+21*64)) + 4*(*(shmem_warp_stream_ptr+42*64));
+      *(D + block_tile_i*N_GLOBAL + i*4*N_GLOBAL + threadIdx.x/64*N_GLOBAL + threadIdx.x%64) = val;
     }
 
-
-    // This warp's pointer to the C matrix data to copy memory from to shared memory. 
-    // TODO: May be moved outside the for loop.
-    size_t gmem_idx = (threadIdx.x/4)*N_GLOBAL + (threadIdx.x%4)*4;
-    // printf("block_tile_i: %d, block_tile_j: %d, warpId: %d, laneId: %d, gmem_idx: %d\n", block_tile_i, block_tile_j, warpId, laneId, gmem_idx);
-    // printf("block_tile_i: %d, block_tile_j: %d, gmem_idx: %d\n", block_tile_i, block_tile_j, gmem_idx);
-    *((int4*)&D[gmem_idx]) = val.vec;
-
+    if(threadIdx.x < 64) {
+      int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x+20*64;
+      int val = *(shmem_warp_stream_ptr) + 2*(*(shmem_warp_stream_ptr+21*64)) + 4*(*(shmem_warp_stream_ptr+42*64));
+      *(D + block_tile_i*N_GLOBAL + 20*N_GLOBAL + threadIdx.x/64*N_GLOBAL + threadIdx.x%64) = val;
+    }
     __syncthreads();
   }
 }
@@ -296,9 +275,9 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < M_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
-        W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
         // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = i;
-        // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
+        W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }
   }
@@ -306,9 +285,9 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
   for(int b = 0; b<X_BIT; b++) {
     for(int i = 0; i < N_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
-        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
-        // X_int[i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
-        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
+        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
+        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }  
   }
@@ -458,7 +437,7 @@ void validate_results_pack(int *C, int* ref_C, int M_, int N_, int OUT_BIT) {
 }
 
 
-// #define verify_output
+#define verify_output
 
 int main(int argc, char **argv) {
 
@@ -470,11 +449,11 @@ int main(int argc, char **argv) {
   int X_BIT = 1;
   int W_BIT = 3;
 
-  for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
+  // for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
     int M_GLOBAL = 64;
     // int N_GLOBAL = 64;
-    // int N_GLOBAL = M_GLOBAL;
-    int K_GLOBAL = N_GLOBAL;
+    int N_GLOBAL = M_GLOBAL;
+    int K_GLOBAL = 128;
   
     int4 *X = NULL;
     int4 *W = NULL;
@@ -508,7 +487,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 200;
+    int NUM_PROFILES = 1;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -550,12 +529,12 @@ int main(int argc, char **argv) {
   free(Output_h);
   free(Output_ref);
 #endif
+
+  checkCudaErrors(cudaFree(reinterpret_cast<void *>(W)));
+  checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
+  checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
   
-    checkCudaErrors(cudaFree(reinterpret_cast<void *>(W)));
-    checkCudaErrors(cudaFree(reinterpret_cast<void *>(X)));
-    checkCudaErrors(cudaFree(reinterpret_cast<void *>(Output)));
-  
-  }
+  // }
 
   return EXIT_SUCCESS;
 }
