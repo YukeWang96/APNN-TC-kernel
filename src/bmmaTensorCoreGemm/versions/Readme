@@ -392,6 +392,12 @@ Results validated. Support CHUNK_K = 1.
 85:
 APMM-W3-A1. Tiling Size: 64x64.
 Results validated. Support CHUNK_K = 1.
-Speed is 10% lower than w1a4. The reason is that I padded too much.
+Speed is 8% lower than w1a4.
 Padding method 1: Given a 64xNxK matrix, compute 2 63xNxK and combine to a 64xNxK.
+
+86:
+APMM-W3-A1. Tiling Size: 64x64.
+Results validated. Support CHUNK_K = 1.
+Speed is 15% lower than w1a4.
+Padding method 2: Given a 64xNxK matrix, compute 1 66xNxK.
 

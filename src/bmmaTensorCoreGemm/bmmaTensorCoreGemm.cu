@@ -117,7 +117,7 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
   // }
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_tile_i = block_pos / (N_GLOBAL/64) * 21;
+    const unsigned int block_tile_i = block_pos / (N_GLOBAL/64) * 22;
     const unsigned int block_tile_j = block_pos % (N_GLOBAL/64) * 64;
 
     // Stop when there are no more D matrix tiles to compute in this CTA.
@@ -125,10 +125,10 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       break;
     }
 
-    wmma::fragment<wmma::accumulator, M, N, K, int> c[WARP_COL_TILES]
+    wmma::fragment<wmma::accumulator, M, N, K, int> c[WARP_COL_TILES+1]
                                                      [WARP_ROW_TILES];
 
-    for(int i=0; i < WARP_COL_TILES; i++)
+    for(int i=0; i < WARP_COL_TILES+1; i++)
       for(int j = 0; j < WARP_ROW_TILES; j++)
         wmma::fill_fragment(c[i][j], 0);
     
@@ -138,7 +138,7 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
 #pragma unroll
     for (int tile_k = 0; tile_k < K_TILES; tile_k += CHUNK_K) {
       // Offset in shared memory from which the B matrix is stored.
-      const size_t shmem_idx_b_off = 64; // TODO: This BLOCK_COL_TILES may be selected to improve performance. Maybe moved outside the for loop.
+      const size_t shmem_idx_b_off = 66; // TODO: This BLOCK_COL_TILES may be selected to improve performance. Maybe moved outside the for loop.
 
 
       // First half of the warp copies the first row / column of the matrix,
@@ -148,11 +148,11 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       if (warpId < 4) {
         lane_ptr = (int*)W + (threadIdx.x/42)*W_bit_offset*4 + block_tile_i*K_GLOBAL/32 + (threadIdx.x%42)/2*K_GLOBAL/32 + (threadIdx.x%42)%2 + tile_k*4;
         // lane_ptr = (int*)W + (threadIdx.x/42)*W_bit_offset*4;
-        shmem_ptr = (int*)shmem + (threadIdx.x/2)*4*(CHUNK_K+SKEW) + threadIdx.x%2;
+        shmem_ptr = (int*)shmem + (threadIdx.x/42)*22*4*(CHUNK_K+SKEW) + (threadIdx.x%42)/2*4*(CHUNK_K+SKEW) + threadIdx.x%2;
         if (threadIdx.x < 126) *shmem_ptr = *lane_ptr;
       } else {
         lane_ptr = (int*)&X[block_tile_j * ROW_BIT + (warpId-4)*16*ROW_BIT] + laneId/4*ROW_BIT*4 + laneId%4 + tile_k*4;
-        shmem_ptr = (int*)shmem + warpId*16*4*(CHUNK_K+SKEW) + (laneId/4)*4*(CHUNK_K+SKEW) + laneId%4;
+        shmem_ptr = (int*)shmem + shmem_idx_b_off*4*(CHUNK_K+SKEW) + (warpId-4)*16*4*(CHUNK_K+SKEW) + (laneId/4)*4*(CHUNK_K+SKEW) + laneId%4;
         *shmem_ptr = *lane_ptr;
       }
       
@@ -164,6 +164,13 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       } else {
         lane_ptr += 8*ROW_BIT*4;
         shmem_ptr += 8*4*(CHUNK_K+SKEW);
+        *shmem_ptr = *lane_ptr;
+      }
+
+      if(threadIdx.x < 12) {
+        lane_ptr = (int*)W + (threadIdx.x/4)*W_bit_offset*4 + block_tile_i*K_GLOBAL/32 + 21*K_GLOBAL/32 + threadIdx.x%4 + tile_k*4;
+        // lane_ptr = (int*)W + (threadIdx.x/42)*W_bit_offset*4;
+        shmem_ptr = (int*)shmem + 21*4*(CHUNK_K+SKEW) + (threadIdx.x/4)*22*4*(CHUNK_K+SKEW) + threadIdx.x%4;
         *shmem_ptr = *lane_ptr;
       }
 
@@ -213,6 +220,40 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
             wmma::bmma_sync(c[i][j], a[i], b[j], c[i][j], bmmaBitOpAND);
           }
         }
+
+        if (warpId >= 6) {
+#pragma unroll
+          for (int i = 0; i < 1; i++) {
+            size_t shmem_idx_a = 64;
+            const int4 *tile_ptr = &shmem[shmem_idx_a][k_step];
+
+            wmma::load_matrix_sync(a[i], tile_ptr, (CHUNK_K + SKEW)*128);
+
+            // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
+            //   for(int t=0; t<a[i].num_elements; t++) {
+            //     printf("a[%d].x[%d]: %x\n", i, t, a[i].x[t]);
+            //   }
+            //   printf("shmem_idx_a: %d, k_step: %d\n", shmem_idx_a, k_step);
+            // }
+
+
+#pragma unroll
+            for (int j = 0; j < WARP_ROW_TILES; j++) {
+              if (i == 0) {
+                // Load the B matrix fragment once, because it is going to be
+                // reused against the other A matrix fragments.
+                size_t shmem_idx_b = shmem_idx_b_off +
+                                    (WARP_ROW_TILES * N) * (warpId % 2) +
+                                    (j * N);
+                const int4 *tile_ptr = &shmem[shmem_idx_b][k_step * (K/128)];
+
+                wmma::load_matrix_sync(b[j], tile_ptr, (CHUNK_K + SKEW)*128);
+              }
+
+              wmma::bmma_sync(c[WARP_COL_TILES][j], a[i], b[j], c[WARP_COL_TILES][j], bmmaBitOpAND);
+            }
+          }
+        }
       }
       __syncthreads();
     }
@@ -232,11 +273,19 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       }
     }
 
+#pragma unroll
+    if (warpId >= 6) {
+      for (int j = 0; j < WARP_ROW_TILES; j++) {
+        int *tile_ptr = shmem_warp_tile_ptr + 2 * 64 * 8 + j * 8;
+        wmma::store_matrix_sync(tile_ptr, c[WARP_COL_TILES][j], 64, C_LAYOUT);
+      }
+    }
+
     __syncthreads();
 
     // if (warpId == 0 && laneId == 0 && blockIdx.x==0) {
-    //   for(int i=62; i<64; i++) {
-    //     for(int j=0; j<64; j++) {
+    //   for(int i=0; i<64; i++) {
+    //     for(int j=60; j<64; j++) {
     //       printf("i: %d, j: %d, val: %d\n", i, j, *((int*)&shmem[0][0]+i*64+j));
     //     }
     //   }
@@ -247,13 +296,13 @@ __global__ void apmm_w3a1(const int4 *W, const int4 *X, int *D, int M_GLOBAL, in
       // This pointer is used to stream the C and D matrices block-wide tile to and from shared memory.
       // int *shmem_warp_stream_ptr = (int*)&shmem[0][0] + warpId * SHMEM_STRIDE * M; // Will be used only when writing back D. Maybe moved outside the for loop. TODO.
       int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x+i*4*64;
-      int val = *(shmem_warp_stream_ptr) + 2*(*(shmem_warp_stream_ptr+21*64)) + 4*(*(shmem_warp_stream_ptr+42*64));
+      int val = *(shmem_warp_stream_ptr) + 2*(*(shmem_warp_stream_ptr+22*64)) + 4*(*(shmem_warp_stream_ptr+44*64));
       *(D + block_tile_i*N_GLOBAL + block_tile_j + i*4*N_GLOBAL + threadIdx.x/64*N_GLOBAL + threadIdx.x%64) = val;
     }
 
-    if(threadIdx.x < 64) {
+    if(threadIdx.x < 128) {
       int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x+20*64;
-      int val = *(shmem_warp_stream_ptr) + 2*(*(shmem_warp_stream_ptr+21*64)) + 4*(*(shmem_warp_stream_ptr+42*64));
+      int val = *(shmem_warp_stream_ptr) + 2*(*(shmem_warp_stream_ptr+22*64)) + 4*(*(shmem_warp_stream_ptr+44*64));
       *(D + block_tile_i*N_GLOBAL + block_tile_j + 20*N_GLOBAL + threadIdx.x/64*N_GLOBAL + threadIdx.x%64) = val;
     }
     __syncthreads();
@@ -266,9 +315,9 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
   for(int b=0; b<W_BIT; b++) {
     for(int i = 0; i < M_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
-        // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
         // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = i;
-        W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
+        // W_int[b*M_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }
   }
@@ -276,9 +325,9 @@ void init_matrices(int4 *W, int4 *X, int M_GLOBAL, int N_GLOBAL, int K_GLOBAL, i
   for(int b = 0; b<X_BIT; b++) {
     for(int i = 0; i < N_GLOBAL; i++) {
       for(int j = 0; j < K_GLOBAL/32; j++) {
-        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
+        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = 0xFFFFFFFF;
         // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = i*M_GLOBAL + j;
-        X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
+        // X_int[b*N_GLOBAL*K_GLOBAL/32 + i*K_GLOBAL/32+j] = rand();
       }
     }  
   }
@@ -428,7 +477,7 @@ void validate_results_pack(int *C, int* ref_C, int M_, int N_, int OUT_BIT) {
 }
 
 
-#define verify_output
+// #define verify_output
 
 int main(int argc, char **argv) {
 
@@ -440,18 +489,14 @@ int main(int argc, char **argv) {
   int X_BIT = 1;
   int W_BIT = 3;
 
-    int M_GLOBAL_no_pad = 64;
-    int M_GLOBAL;
-    if (M_GLOBAL_no_pad%21 != 0) {
-      M_GLOBAL = (M_GLOBAL_no_pad/21+1)*21;
-    } else {
-      M_GLOBAL = M_GLOBAL_no_pad;
-    }
+  int M_GLOBAL_no_pad = 64;
+  int M_GLOBAL = 66;
     
   for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
     // int N_GLOBAL = 64;
     // int N_GLOBAL = M_GLOBAL_no_pad;
     int K_GLOBAL = N_GLOBAL;
+    // int K_GLOBAL = 128;
   
     int4 *X = NULL;
     int4 *W = NULL;
@@ -510,7 +555,7 @@ int main(int argc, char **argv) {
     printf("Time: %f ms\n", bmma_ms_avg);  
     printf("TOPS: %.2f\n", (((double)(M_GLOBAL_no_pad) * N_GLOBAL * K_GLOBAL * 2)/(bmma_ms_avg/1000.)) / 1e12);
   
-  
+
 #ifdef verify_output
   printf("Validating results...\n");
   checkCudaErrors(cudaMemcpy(Output_h, Output, sizeof(int) * M_GLOBAL * N_GLOBAL, cudaMemcpyDeviceToHost));
