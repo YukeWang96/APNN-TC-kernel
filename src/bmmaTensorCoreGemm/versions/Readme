@@ -392,12 +392,17 @@ Results validated. Support CHUNK_K = 1.
 85:
 APMM-W3-A1. Tiling Size: 64x64.
 Results validated. Support CHUNK_K = 1.
-Speed is 8% lower than w1a4.
+Speed is 8% lower than V79 w1a3.
 Padding method 1: Given a 64xNxK matrix, compute 2 63xNxK and combine to a 64xNxK.
 
 86:
 APMM-W3-A1. Tiling Size: 64x64.
 Results validated. Support CHUNK_K = 1.
-Speed is 15% lower than w1a4.
+Speed is 15% lower than V79 w1a3.
 Padding method 2: Given a 64xNxK matrix, compute 1 66xNxK.
 
+87:
+APMM-W3-A1. Tiling Size: 64x64.
+Results validated. Support CHUNK_K = 1.
+Speed is 6.5% lower than V79 w1a3.
+Same padding as V85 with slightly different thread layout.
