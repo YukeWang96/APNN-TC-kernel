@@ -388,3 +388,10 @@ APMM-w1a1. With the same data layout as Conv. 32-bit output. 64x64.
 No need to reduce since it is w1a1.
 Writing directly from FRAG to GL without SHMEM.
 Results validated. Support CHUNK_K = 1.
+
+85:
+APMM-W3-A1. Tiling Size: 64x64.
+Results validated. Support CHUNK_K = 1.
+Speed is 10% lower than w1a4. The reason is that I padded too much.
+Padding method 1: Given a 64xNxK matrix, compute 2 63xNxK and combine to a 64xNxK.
+
