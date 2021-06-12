@@ -412,8 +412,12 @@ APMM-W5-A1. Tiling Size: 64x64.
 Results validated. Support CHUNK_K = 1.
 Speed is 15% lower than V80 w5a1. Small size is fine. Large size (N=896 and N=1024) is bad.
 
-88:
+89:
 APMM-W6-A2. Tiling Size: 64x64.
 Results validated. Support CHUNK_K = 1.
 Speed is 13% lower than V81 w6a2. 
 
+90:
+APConv-w1a3. Tiling Size: 64x64.
+Results validated.
+Speed is 9% faster than V59 w1a3.
