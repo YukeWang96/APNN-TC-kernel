@@ -421,3 +421,14 @@ Speed is 13% lower than V81 w6a2.
 APConv-w1a3. Tiling Size: 64x64.
 Results validated.
 Speed is 9% faster than V59 w1a3.
+
+91:
+APConv-w1a5. Tiling Size: 64x64.
+Results validated.
+Speed is 28% faster than V59 w1a3.
+
+92:
+APConv-w2a6. Tiling Size: 64x64.
+Results NOT validated.
+Speed is ??% faster than V59 w1a3.
+

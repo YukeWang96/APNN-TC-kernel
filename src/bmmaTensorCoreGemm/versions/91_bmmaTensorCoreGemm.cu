@@ -83,9 +83,9 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
   const unsigned int laneId = threadIdx.x % WARP_SIZE;
 
   for (unsigned int block_pos = blockIdx.x;; block_pos += gridDim.x) {
-    const unsigned int block_i = (block_pos/(COUT/32)) / (Width/5) * 2;
-    const unsigned int block_j = (block_pos/(COUT/32)) % (Width/5) * 5;
-    const unsigned int block_z = block_pos % (COUT/32) * 32;
+    const unsigned int block_i = (block_pos/(COUT/64)) / (Width/4) * 3;
+    const unsigned int block_j = (block_pos/(COUT/64)) % (Width/4) * 4;
+    const unsigned int block_z = block_pos % (COUT/64) * 64;
     if (block_i >= Height) {
       break;
     }
@@ -104,10 +104,10 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     // for (int tile_k = 0; tile_k < 4; tile_k += CHUNK_K) {
 
       int SHMEM_i = threadIdx.x/4;
-      int bit_flag = SHMEM_i / 10; // bit_flag = 0/1, indicates 
-      int SHMEM_offset = SHMEM_i % 10;
-      int row = SHMEM_offset / 5;
-      int col = SHMEM_offset % 5;
+      int bit_flag = SHMEM_i / 12; // bit_flag = 0/1, indicates 
+      int SHMEM_offset = SHMEM_i % 12;
+      int row = SHMEM_offset / 4;
+      int col = SHMEM_offset % 4;
       int t = threadIdx.x % 4;
 
       int sub_row = (tile_k+t)/(3*CIN/128);
@@ -196,10 +196,10 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 #pragma unroll
     for (int tile_k = int(9*CIN/128/CHUNK_K)*CHUNK_K; tile_k < 9*CIN/128; tile_k++) {
       int SHMEM_i = threadIdx.x/4;
-      int bit_flag = SHMEM_i / 10;
-      int SHMEM_offset = SHMEM_i % 10;
-      int row = SHMEM_offset / 5;
-      int col = SHMEM_offset % 5;
+      int bit_flag = SHMEM_i / 12;
+      int SHMEM_offset = SHMEM_i % 12;
+      int row = SHMEM_offset / 4;
+      int col = SHMEM_offset % 4;
       int t = threadIdx.x % 4;
 
       int sub_row = (tile_k)/(3*CIN/128);
@@ -270,7 +270,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
     __syncthreads();
 
-    // if (block_pos == 1 && warpId == 0 && laneId == 0) {
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
     //   for(int i = 0; i < 64; i++) {
     //     for(int j = 0; j < 64; j++) {
     //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
@@ -279,49 +279,23 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     //   }
     // }
 
-    int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+(threadIdx.x/32)*64 + threadIdx.x%32;
-    int val = *shmem_warp_stream_ptr + 2*(*(shmem_warp_stream_ptr+32))
-           + 2*(*(shmem_warp_stream_ptr+10*64)) + 4*(*(shmem_warp_stream_ptr+10*64+32))
-           + 4*(*(shmem_warp_stream_ptr+20*64)) + 8*(*(shmem_warp_stream_ptr+20*64+32))
-           + 8*(*(shmem_warp_stream_ptr+30*64)) + 16*(*(shmem_warp_stream_ptr+30*64+32))
-           + 16*(*(shmem_warp_stream_ptr+40*64)) + 32*(*(shmem_warp_stream_ptr+40*64+32))
-           + 32*(*(shmem_warp_stream_ptr+50*64)) + 64*(*(shmem_warp_stream_ptr+50*64+32));
-    int SHMEM_row = threadIdx.x/32;
-    int SHMEM_col = threadIdx.x%32;
-    int Output_row = SHMEM_row/5;
-    int Output_col = SHMEM_row%5;
-
-    *(Output + block_i * Width * COUT + block_j*COUT + block_z 
-              + Output_row*Width*COUT + Output_col*COUT
-              + SHMEM_col)
-        = val;  
-
-    if (block_pos == 0 && warpId == 0 && laneId == 7) {
-      printf("ThreadIdx.x: %d, val: %d, idx: %d, block_i: %d, block_j: %d, output_row: %d, output_col: %d, GL_val: %d\n", threadIdx.x, val, block_i * Width * COUT + block_j*COUT + block_z 
-      + Output_row*Width*COUT + Output_col*COUT
-      + SHMEM_col, block_i, block_j, Output_row, Output_col, *(Output + block_i * Width * COUT + block_j*COUT + block_z 
-        + Output_row*Width*COUT + Output_col*COUT
-        + SHMEM_col));
-    }
-
-    if (threadIdx.x < 64) {
-      shmem_warp_stream_ptr = (int*)&shmem[0][0]+8*64+(threadIdx.x/32)*64 + threadIdx.x%32;
-      val = *shmem_warp_stream_ptr + 2*(*(shmem_warp_stream_ptr+32))
-             + 2*(*(shmem_warp_stream_ptr+10*64)) + 4*(*(shmem_warp_stream_ptr+10*64+32))
-             + 4*(*(shmem_warp_stream_ptr+20*64)) + 8*(*(shmem_warp_stream_ptr+20*64+32))
-             + 8*(*(shmem_warp_stream_ptr+30*64)) + 16*(*(shmem_warp_stream_ptr+30*64+32))
-             + 16*(*(shmem_warp_stream_ptr+40*64)) + 32*(*(shmem_warp_stream_ptr+40*64+32))
-             + 32*(*(shmem_warp_stream_ptr+50*64)) + 64*(*(shmem_warp_stream_ptr+50*64+32));
-      SHMEM_row = 8+threadIdx.x/32;
-      SHMEM_col = threadIdx.x%32;
-      Output_row = SHMEM_row/5;
-      Output_col = SHMEM_row%5;
+#pragma unroll
+    for (int i = 0; i < 3; i++) {
+      int *shmem_warp_stream_ptr = (int*)&shmem[0][0]+threadIdx.x+i*4*64;
+      int val = *shmem_warp_stream_ptr + 2*(*(shmem_warp_stream_ptr+12*64)) + 4*(*(shmem_warp_stream_ptr+24*64)) + 8*(*(shmem_warp_stream_ptr+36*64)) + 16*(*(shmem_warp_stream_ptr+48*64));
+      int SHMEM_row = (threadIdx.x+i*4*64)/64;
+      int SHMEM_col = threadIdx.x%64;
+      int Output_row = SHMEM_row/4;
+      int Output_col = SHMEM_row%4;
   
       *(Output + block_i * Width * COUT + block_j*COUT + block_z 
                 + Output_row*Width*COUT + Output_col*COUT
                 + SHMEM_col)
           = val;  
     }
+
+
+
     __syncthreads();
   }
 }
@@ -419,14 +393,14 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for(int i = 0; i<1; i++) {
-    for(int j = 0; j<2; j++) {
+  for(int i = 0; i<Height; i++) {
+    for(int j = 0; j<Width; j++) {
       for(int co=0; co<COUT; co++) {
         int idx = i*Width*COUT+j*COUT+co;
         double dst = fabs(C[idx] - ref_C[idx]);
         double abs = fabs(C[idx]) * fabs(ref_C[idx]);
-        // double ref_err = dst / abs;
-        if (dst != 0) {
+        double ref_err = dst / abs;
+        if (ref_err > eps) {
           // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
           printf("i: %d, j: %d, co: %d, C: %d, ref_C: %d\n", i, j, co, C[idx], ref_C[idx]);
           // printf("non equal\n");
@@ -450,15 +424,14 @@ int main(int argc, char **argv) {
 
   int Width_no_pad = 16;
   int Height_no_pad = 16;
-  int Width = 20;
-  int Height = 16;
-  int X_BIT = 6;
-  int W_BIT = 2;
+  int Width = 16;
+  int Height = 18;
+  int X_BIT = 5;
+  int W_BIT = 1;
 
-  // for(int CIN = 128; CIN <= 1024; CIN+=128) {
-    int CIN = 128;
-    // int COUT = CIN;
-    int COUT = 64;
+  for(int CIN = 128; CIN <= 1024; CIN+=128) {
+    // int CIN = 128;
+    int COUT = CIN;
     int4 *X = NULL;
     int4 *W = NULL;
     int *Output = NULL;
@@ -490,7 +463,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1;
+    int NUM_PROFILES = 1000;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -530,7 +503,7 @@ int main(int argc, char **argv) {
   validate_results(Output_h, C_ref, Height, Width, COUT);
 #endif
 
-  // }
+  }
 
 
   // free(A_h);
