@@ -432,3 +432,8 @@ APConv-w2a6. Tiling Size: 64x64.
 Results validated.
 Speed is 64% faster than V63 w2a6.
 
+93:
+APConv-w2a8. Tiling Size: 64x64.
+Results validated.
+Speed is 79% faster than V56 w2a8.
+
