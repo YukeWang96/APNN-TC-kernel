@@ -400,7 +400,7 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
         double dst = fabs(C[idx] - ref_C[idx]);
         double abs = fabs(C[idx]) * fabs(ref_C[idx]);
         double ref_err = dst / abs;
-        if (ref_err > eps) {
+        if (dst != 0) {
           // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
           printf("i: %d, j: %d, co: %d, C: %d, ref_C: %d\n", i, j, co, C[idx], ref_C[idx]);
           // printf("non equal\n");

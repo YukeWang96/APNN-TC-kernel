@@ -58,6 +58,7 @@ typedef union {
 __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int Height, int Width, int CIN, int COUT) {
   // GEMM Configuration
   int X_bit_offset = (Height+2) * (Width+2) * CIN/128;
+  int W_bit_offset = 9*CIN/128*COUT;
   int BIT=3;
   int X_ROW_BIT = (Width+2)*CIN/128;
   int W_ROW_BIT = 9*(CIN/128);
@@ -66,7 +67,7 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
   //   // for(int i = 0; i<Height*Width*CIN/32*BIT; i++) {
   //   //   printf("X[%d]: %x\n", i, *((int*)X+i));
   //   // }  
-  //   for(int i = 0; i<COUT*9*CIN/32; i++) {
+  //   for(int i = 0; i<9*CIN/32; i++) {
   //     printf("W[%d]: %x\n", i, *((int*)W+i));
   //   }  
   // }
@@ -134,13 +135,16 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
       SHMEM_i += 64;
 
-      int weight_load_idx = (block_z + threadIdx.x/4) * W_ROW_BIT + tile_k + t;
+      bit_flag = threadIdx.x/4 / 32;
+      SHMEM_offset = SHMEM_i % 32;
+
+      int weight_load_idx = bit_flag * W_bit_offset + (block_z + SHMEM_offset) * W_ROW_BIT + tile_k + t;
       shmem[SHMEM_i][t] = W[weight_load_idx];
 
       __syncthreads();
 
       // if (block_pos == 0 && warpId == 0 && laneId == 0) {
-      //   for(int i = 0; i < 128; i++) {
+      //   for(int i = 64; i < 128; i+=32) {
       //     for(int j = 0; j < 16; j++) {
       //       int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
       //       printf("tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
@@ -192,7 +196,32 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       __syncthreads();
     }
 
+    int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
+                              (warpId / 2) * 64 * 8 * 2 +
+                              (warpId % 2) * 32; // Will be used only when writing back D. May be moved outside the for loop. TODO.
 
+    // Store the D fragments to shared memory.
+#pragma unroll
+    for (int i = 0; i < WARP_COL_TILES; i++) {
+#pragma unroll
+      for (int j = 0; j < WARP_ROW_TILES; j++) {
+        int *tile_ptr = shmem_warp_tile_ptr + i*64*8 + j*8;
+        wmma::store_matrix_sync(tile_ptr, c[i][j], 64,  wmma::mem_row_major);
+      }
+    }
+
+    __syncthreads();
+
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+    //   for(int i = 0; i < 60; i+=10) {
+    //     for(int j = 0; j < 64; j+=32) {
+    //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
+    //       printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
+    //     }
+    //   }
+    //   printf("First print end.\n\n");
+    // }
+    
 #pragma unroll
     for (int tile_k = int(9*CIN/128/CHUNK_K)*CHUNK_K; tile_k < 9*CIN/128; tile_k++) {
       int SHMEM_i = threadIdx.x/4;
@@ -215,10 +244,24 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
       if (threadIdx.x < 240) *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&X[GL_idx] + t);
 
       SHMEM_i += 64;
-      int weight_load_idx = (block_z + threadIdx.x/4) * W_ROW_BIT + tile_k;
+      bit_flag = threadIdx.x/4 / 32;
+      SHMEM_offset = SHMEM_i % 32;
+
+      int weight_load_idx = bit_flag * W_bit_offset + (block_z + SHMEM_offset) * W_ROW_BIT + tile_k;
+
       *((int*)&shmem[SHMEM_i][0] + t) = *((int*)&W[weight_load_idx] + t);
 
       __syncthreads();
+
+      // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+      //   for(int i = 64; i < 128; i+=32) {
+      //     for(int j = 0; j < 4; j++) {
+      //       int *tile_ptr = (int*)&shmem[0][0] + i*20 + j;
+      //       printf("tile_k: %d, i: %d, j: %d, val: %x\n", tile_k, i, j, *tile_ptr);
+      //     }
+      //   }
+      // }
+
 
       // Compute a grid of C matrix tiles in each warp.
 
@@ -254,7 +297,8 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
     //   }
     // }
     // This pointer is used to access the C and D matrix tiles this warp computes.
-    int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
+    // int *shmem_warp_tile_ptr = (int*)&shmem[0][0] +
+    shmem_warp_tile_ptr = (int*)&shmem[0][0] +
                               (warpId / 2) * 64 * 8 * 2 +
                               (warpId % 2) * 32; // Will be used only when writing back D. May be moved outside the for loop. TODO.
 
@@ -270,9 +314,9 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
 
     __syncthreads();
 
-    // if (block_pos == 1 && warpId == 0 && laneId == 0) {
-    //   for(int i = 0; i < 64; i++) {
-    //     for(int j = 0; j < 64; j++) {
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+    //   for(int i = 0; i < 60; i+=10) {
+    //     for(int j = 0; j < 64; j+=32) {
     //       int *tile_ptr = (int*)&shmem[0][0] + i*64 + j;
     //       printf("i: %d, j: %d, val: %d\n", i, j, *tile_ptr);
     //     }
@@ -296,13 +340,13 @@ __global__ void compute_conv_imma(const int4 *W, const int4 *X, int *Output, int
               + SHMEM_col)
         = val;  
 
-    if (block_pos == 0 && warpId == 0 && laneId == 7) {
-      printf("ThreadIdx.x: %d, val: %d, idx: %d, block_i: %d, block_j: %d, output_row: %d, output_col: %d, GL_val: %d\n", threadIdx.x, val, block_i * Width * COUT + block_j*COUT + block_z 
-      + Output_row*Width*COUT + Output_col*COUT
-      + SHMEM_col, block_i, block_j, Output_row, Output_col, *(Output + block_i * Width * COUT + block_j*COUT + block_z 
-        + Output_row*Width*COUT + Output_col*COUT
-        + SHMEM_col));
-    }
+    // if (block_pos == 0 && warpId == 0 && laneId == 0) {
+    //   printf("ThreadIdx.x: %d, val: %d, idx: %d, block_i: %d, block_j: %d, output_row: %d, output_col: %d, GL_val: %d\n", threadIdx.x, val, block_i * Width * COUT + block_j*COUT + block_z 
+    //   + Output_row*Width*COUT + Output_col*COUT
+    //   + SHMEM_col, block_i, block_j, Output_row, Output_col, *(Output + block_i * Width * COUT + block_j*COUT + block_z 
+    //     + Output_row*Width*COUT + Output_col*COUT
+    //     + SHMEM_col));
+    // }
 
     if (threadIdx.x < 64) {
       shmem_warp_stream_ptr = (int*)&shmem[0][0]+8*64+(threadIdx.x/32)*64 + threadIdx.x%32;
@@ -419,12 +463,11 @@ void validate_results(int *C, int* ref_C, int Height, int Width, int COUT) {
   bool correct = true;
   double eps = 1.e-6;  // machine zero
 
-  for(int i = 0; i<1; i++) {
-    for(int j = 0; j<2; j++) {
+  for(int i = 0; i<Height; i++) {
+    for(int j = 0; j<Width; j++) {
       for(int co=0; co<COUT; co++) {
         int idx = i*Width*COUT+j*COUT+co;
         double dst = fabs(C[idx] - ref_C[idx]);
-        double abs = fabs(C[idx]) * fabs(ref_C[idx]);
         // double ref_err = dst / abs;
         if (dst != 0) {
           // printf("Error! Matrix[%05d]=%.8f, ref=%.8f error term is > %E\n",, eps);
@@ -455,10 +498,10 @@ int main(int argc, char **argv) {
   int X_BIT = 6;
   int W_BIT = 2;
 
-  // for(int CIN = 128; CIN <= 1024; CIN+=128) {
-    int CIN = 128;
-    // int COUT = CIN;
-    int COUT = 64;
+  for(int CIN = 128; CIN <= 1024; CIN+=128) {
+    // int CIN = 128;
+    int COUT = CIN;
+    // int COUT = 64;
     int4 *X = NULL;
     int4 *W = NULL;
     int *Output = NULL;
@@ -490,7 +533,7 @@ int main(int argc, char **argv) {
   
     // Run ours NUM_PROFILES times and record time.
     float bmma_ms_avg = 0.0f;
-    int NUM_PROFILES = 1;
+    int NUM_PROFILES = 1000;
     for(int iter=0; iter<NUM_PROFILES; ++iter){
             float bmma_ms = 0.0f;
             cudaEvent_t bmma_start;
@@ -530,7 +573,7 @@ int main(int argc, char **argv) {
   validate_results(Output_h, C_ref, Height, Width, COUT);
 #endif
 
-  // }
+  }
 
 
   // free(A_h);
