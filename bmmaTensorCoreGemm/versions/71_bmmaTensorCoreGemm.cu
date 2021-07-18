@@ -486,11 +486,11 @@ int main(int argc, char **argv) {
   int X_BIT = 2;
   int W_BIT = 1;
 
-  for (int M_GLOBAL=128; M_GLOBAL<=1024; M_GLOBAL += 128 ) {
-    // int M_GLOBAL = 256;
-    int N_GLOBAL = M_GLOBAL;
-    int K_GLOBAL = M_GLOBAL;
-    M_GLOBAL = 64;
+  int M_GLOBAL = 64;
+  
+  for (int N_GLOBAL=128; N_GLOBAL<=1024; N_GLOBAL += 128 ) {
+
+    int K_GLOBAL = N_GLOBAL;
     
     int4 *X = NULL;
     int4 *W = NULL;
