@@ -490,7 +490,8 @@ int main(int argc, char **argv) {
     // int M_GLOBAL = 256;
     int N_GLOBAL = M_GLOBAL;
     int K_GLOBAL = M_GLOBAL;
-  
+    M_GLOBAL = 64;
+    
     int4 *X = NULL;
     int4 *W = NULL;
     int *Output = NULL;
