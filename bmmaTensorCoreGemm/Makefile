@@ -11,8 +11,10 @@ all: gemm-w1a2 \
 	gemm-w2a2 \
 	conv-w1a2 \
 	conv-w1a3 \
-	conv-w1a4 \
-	conv-w2a2
+	conv-w1a4_small \
+	conv-w1a4_large \
+	conv-w2a2_small \
+	conv-w2a2_large
 
 gemm-w1a2: $(SRC_DIR)/71_bmmaTensorCoreGemm.cu
 	$(CC) $(FLAG) $(INC) -o $@.out $^
