@@ -444,8 +444,8 @@ int main(int argc, char **argv) {
   cudaDeviceProp deviceProp;
   checkCudaErrors(cudaGetDeviceProperties(&deviceProp, dev));
 
-  int Height = 32;
-  int Width = 32;
+  int Height = 16;
+  int Width = 16;
   int X_BIT = 8;
   int W_BIT = 1;
 
