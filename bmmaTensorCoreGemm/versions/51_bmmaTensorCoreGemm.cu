@@ -506,10 +506,10 @@ int main(int argc, char **argv) {
     }
   
     bmma_ms_avg = bmma_ms_avg/(double)NUM_PROFILES;
-    printf("H: %d, W: %d, CIN: %d, COUT: %d, W_BIT: %d, X_BIT: %d\n", Height, Width, CIN, COUT, W_BIT, X_BIT);
-    printf("Time: %f ms\n", bmma_ms_avg);
+    printf("H: %d, W: %d, CIN: %d, COUT: %d, W_BIT: %d, X_BIT: %d, ", Height, Width, CIN, COUT, W_BIT, X_BIT);
+    printf("Time: %f ms, ", bmma_ms_avg);
   
-    printf("TOPS: %.2f\n\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
+    printf("TOPS: %.2f\n", (((double)9 * CIN * Height * Width * COUT * 2)/(bmma_ms_avg/1000.)) / 1e12);
   
   
 
